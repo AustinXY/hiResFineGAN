@@ -57,7 +57,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.manualSeed)
     if cfg.CUDA:
         torch.cuda.manual_seed_all(args.manualSeed)
-    
+
     # Evaluation part
     if not cfg.TRAIN.FLAG:
         from trainer import FineGAN_evaluator as evaluator
@@ -81,7 +81,7 @@ if __name__ == "__main__":
         bshuffle = True
 
         # Get data loader
-        imsize = cfg.TREE.BASE_SIZE * (2 ** (cfg.TREE.BRANCH_NUM-1))
+        imsize = cfg.TREE.BASE_SIZE * (2 ** (cfg.TREE.BRANCH_NUM-2))
         image_transform = transforms.Compose([
             transforms.Scale(int(imsize * 76 / 64)),
             transforms.RandomCrop(imsize),

@@ -50,26 +50,34 @@ def get_imgs(img_path, imsize, bbox=None,
         y2 = np.minimum(height, center_y + r)
         x1 = np.maximum(0, center_x - r)
         x2 = np.minimum(width, center_x + r)
-	fimg = deepcopy(img)
-	fimg_arr = np.array(fimg)
-	fimg = Image.fromarray(fimg_arr)
+        fimg = deepcopy(img)
+        fimg_arr = np.array(fimg)
+        fimg = Image.fromarray(fimg_arr)
         cimg = img.crop([x1, y1, x2, y2])
 
     if transform is not None:
-	cimg = transform(cimg)
+        cimg = transform(cimg)
 
-    
+    # DBPRINT
+    # print(cimg.size)
+
+
     retf = []
     retc = []
     re_cimg = transforms.Scale(imsize[1])(cimg)
+
+    # DBPRINT
+    # print(re_cimg.size)
+
+
     retc.append(normalize(re_cimg))
 
     # We use full image to get background patches
 
-    # We resize the full image to be 126 X 126 (instead of 128 X 128)  for the full coverage of the input (full) image by 
+    # We resize the full image to be 126 X 126 (instead of 128 X 128)  for the full coverage of the input (full) image by
     # the receptive fields of the final convolution layer of background discriminator
-    
-    my_crop_width = 126	
+
+    my_crop_width = 126
     re_fimg = transforms.Scale(int(my_crop_width * 76 / 64))(fimg)
     re_width, re_height = re_fimg.size
 
@@ -77,7 +85,7 @@ def get_imgs(img_path, imsize, bbox=None,
     x_crop_range = re_width-my_crop_width
     y_crop_range = re_height-my_crop_width
 
-    crop_start_x = np.random.randint(x_crop_range)	
+    crop_start_x = np.random.randint(x_crop_range)
     crop_start_y = np.random.randint(y_crop_range)
 
     crop_re_fimg = re_fimg.crop([crop_start_x, crop_start_y, crop_start_x + my_crop_width, crop_start_y + my_crop_width])
@@ -101,7 +109,7 @@ def get_imgs(img_path, imsize, bbox=None,
 	warped_x2 = flipped_x2
 
     retf.append(normalize(crop_re_fimg))
-		
+
     warped_bbox = []
     warped_bbox.append(warped_y1)
     warped_bbox.append(warped_x1)
@@ -134,7 +142,7 @@ class Dataset(data.Dataset):
         else:
             self.iterator = self.prepair_test_pairs
 
-        
+
     # only used in background stage
     def load_bbox(self):
         # Returns a dictionary with image filename as 'key' and its bounding box coordinates as 'value'
@@ -179,11 +187,11 @@ class Dataset(data.Dataset):
         fimgs, cimgs, warped_bbox = get_imgs(img_name, self.imsize,
                         bbox, self.transform, normalize=self.norm)
 
-        rand_class= random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1); # Randomly generating child code during training 
+        rand_class= random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1); # Randomly generating child code during training
 	c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES,])
 	c_code[rand_class] = 1
 
-        return fimgs, cimgs, c_code, key, warped_bbox 
+        return fimgs, cimgs, c_code, key, warped_bbox
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]
@@ -197,7 +205,7 @@ class Dataset(data.Dataset):
         _, imgs, _ = get_imgs(img_name, self.imsize,
                         bbox, self.transform, normalize=self.norm)
 
-        return imgs, c_code, key 
+        return imgs, c_code, key
 
     def __getitem__(self, index):
         return self.iterator(index)

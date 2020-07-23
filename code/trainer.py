@@ -72,6 +72,7 @@ def load_network(gpus):
     for i in range(len(netsD)):
         netsD[i].apply(weights_init)
         netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
+        print(netsD[i])
 
     count = 0
 
@@ -102,7 +103,7 @@ def load_network(gpus):
 def define_optimizers(netG, netsD):
     optimizersD = []
     num_Ds = len(netsD)
-    for i in range(num_Ds):      
+    for i in range(num_Ds):
         opt = optim.Adam(netsD[i].parameters(),
                          lr=cfg.TRAIN.DISCRIMINATOR_LR,
                          betas=(0.5, 0.999))
@@ -114,7 +115,7 @@ def define_optimizers(netG, netsD):
                             betas=(0.5, 0.999)))
 
     for i in range(num_Ds):
-        if i==1:   
+        if i==1:
                 opt = optim.Adam(netsD[i].parameters(),
                 lr=cfg.TRAIN.GENERATOR_LR,
                 betas=(0.5, 0.999))
@@ -225,15 +226,15 @@ class FineGAN_trainer(object):
         batch_size = self.real_fimgs[0].size(0)
         criterion, criterion_one = self.criterion, self.criterion_one
 
-        netD, optD = self.netsD[idx], self.optimizersD[idx] 
+        netD, optD = self.netsD[idx], self.optimizersD[idx]
 	if idx == 0:
         	real_imgs = self.real_fimgs[0]
-	
+
 	elif idx == 2:
 		real_imgs = self.real_cimgs[0]
-       
+
         fake_imgs = self.fake_imgs[idx]
-        netD.zero_grad()        
+        netD.zero_grad()
         real_logits = netD(real_imgs)
 
 	if idx == 2:
@@ -245,7 +246,7 @@ class FineGAN_trainer(object):
 		ext, output = real_logits
 		weights_real = torch.ones_like(output)
 		real_labels = torch.ones_like(output)
-            
+
                 for i in range(batch_size):
                         x1 =  self.warped_bbox[0][i]
                         x2 =  self.warped_bbox[2][i]
@@ -267,7 +268,7 @@ class FineGAN_trainer(object):
         fake_logits = netD(fake_imgs.detach())
 
 
-	  
+
 	if idx == 0: # Background stage
 
             errD_real_uncond = criterion(real_logits[1], real_labels)  # Real/Fake loss for 'real background' (on patch level)
@@ -276,7 +277,7 @@ class FineGAN_trainer(object):
 
             errD_real_uncond_classi = criterion(real_logits[0], weights_real)  # Background/foreground classification loss
 	    errD_real_uncond_classi = errD_real_uncond_classi.mean()
-	   
+
             errD_fake_uncond = criterion(fake_logits[1], fake_labels)  # Real/Fake loss for 'fake background' (on patch level)
 	    errD_fake_uncond = errD_fake_uncond.mean()
 
@@ -289,9 +290,9 @@ class FineGAN_trainer(object):
 	    errD = ((errD_real + errD_fake) * cfg.TRAIN.BG_LOSS_WT) + errD_real_uncond_classi
 
         if idx == 2:
-	
+
             errD_real = criterion_one(real_logits[1], real_labels) # Real/Fake loss for the real image
-            errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image   
+            errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
             errD = errD_real + errD_fake
 
         if (idx == 0 or idx == 2):
@@ -299,18 +300,18 @@ class FineGAN_trainer(object):
               optD.step()
 
         if (flag == 0):
-            summary_D = summary.scalar('D_loss%d' % idx, errD.data[0])
+            summary_D = summary.scalar('D_loss%d' % idx, errD.item())
             self.summary_writer.add_summary(summary_D, count)
-            summary_D_real = summary.scalar('D_loss_real_%d' % idx, errD_real.data[0])
+            summary_D_real = summary.scalar('D_loss_real_%d' % idx, errD_real.item())
             self.summary_writer.add_summary(summary_D_real, count)
-            summary_D_fake = summary.scalar('D_loss_fake_%d' % idx, errD_fake.data[0])
+            summary_D_fake = summary.scalar('D_loss_fake_%d' % idx, errD_fake.item())
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
 
     def train_Gnet(self, count):
         self.netG.zero_grad()
-        for myit in range(len(self.netsD)): 
+        for myit in range(len(self.netsD)):
              self.netsD[myit].zero_grad()
 
         errG_total = 0
@@ -319,17 +320,17 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
 
         for i in range(self.num_Ds):
-	  
-	    outputs = self.netsD[i](self.fake_imgs[i]) 	
+
+	    outputs = self.netsD[i](self.fake_imgs[i])
 
             if i == 0 or i == 2:  # real/fake loss for background (0) and child (2) stage
 		real_labels = torch.ones_like(outputs[1])
-	    	errG = criterion_one(outputs[1], real_labels) 
+	    	errG = criterion_one(outputs[1], real_labels)
 		if i==0:
 			errG = errG * cfg.TRAIN.BG_LOSS_WT
 			errG_classi = criterion_one(outputs[0], real_labels) # Background/Foreground classification loss for the fake background image (on patch level)
 			errG = errG + errG_classi
-	    	errG_total = errG_total + errG	
+	    	errG_total = errG_total + errG
 
             if i == 1: # Mutual information loss for the parent stage (1)
                     pred_p = self.netsD[i](self.fg_mk[i-1])
@@ -343,15 +344,15 @@ class FineGAN_trainer(object):
 
             if flag == 0:
 		if i>0:
-                  summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.data[0])
+                  summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
                   self.summary_writer.add_summary(summary_D_class, count)
 
 		if i == 0 or i == 2:
-                  summary_D = summary.scalar('G_loss%d' % i, errG.data[0])
-                  self.summary_writer.add_summary(summary_D, count) 
+                  summary_D = summary.scalar('G_loss%d' % i, errG.item())
+                  self.summary_writer.add_summary(summary_D, count)
 
         errG_total.backward()
-        for myit in range(len(self.netsD)): 
+        for myit in range(len(self.netsD)):
         	self.optimizerG[myit].step()
         return errG_total
 
@@ -370,15 +371,15 @@ class FineGAN_trainer(object):
             Variable(torch.FloatTensor(self.batch_size).fill_(1))
         self.fake_labels = \
             Variable(torch.FloatTensor(self.batch_size).fill_(0))
-	
+
         nz = cfg.GAN.Z_DIM
         noise = Variable(torch.FloatTensor(self.batch_size, nz))
         fixed_noise = \
             Variable(torch.FloatTensor(self.batch_size, nz).normal_(0, 1))
         hard_noise = \
             Variable(torch.FloatTensor(self.batch_size, nz).normal_(0, 1)).cuda()
-	
-	self.patch_stride = float(4)    # Receptive field stride given the current discriminator architecture for background stage 
+
+	self.patch_stride = float(4)    # Receptive field stride given the current discriminator architecture for background stage
 	self.n_out = 24                 # Output size of the discriminator at the background stage; N X N where N = 24
 	self.recp_field = 34            # Receptive field of each of the member of N X N
 
@@ -390,16 +391,16 @@ class FineGAN_trainer(object):
             self.real_labels = self.real_labels.cuda()
             self.fake_labels = self.fake_labels.cuda()
             noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
-        
-        print ("Starting normal FineGAN training..") 
+
+        print ("Starting normal FineGAN training..")
         count = start_count
         start_epoch = start_count // (self.num_batches)
 
         for epoch in range(start_epoch, self.max_epoch):
             start_t = time.time()
-            
+
             for step, data in enumerate(self.data_loader, 0):
-               
+
                 self.imgs_tcpu, self.real_fimgs, self.real_cimgs, \
                     self.c_code, self.warped_bbox = self.prepare_data(data)
 
@@ -409,9 +410,9 @@ class FineGAN_trainer(object):
                     self.netG(noise, self.c_code)
 
                 # Obtain the parent code given the child code
-		self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES) 
+		self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
 
-                # Update Discriminator networks 
+                # Update Discriminator networks
                 errD_total = 0
                 for i in range(self.num_Ds):
 		  if i == 0 or i == 2: # only at parent and child stage
@@ -430,7 +431,7 @@ class FineGAN_trainer(object):
                     save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
                     # Save images
                     load_params(self.netG, avg_param_G)
-                    
+
                     self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
                         self.netG(fixed_noise, self.c_code)
                     save_img_results(self.imgs_tcpu, (self.fake_imgs + self.fg_imgs + self.mk_imgs + self.fg_mk), self.num_Ds,
@@ -441,9 +442,9 @@ class FineGAN_trainer(object):
             end_t = time.time()
             print('''[%d/%d][%d]
                          Loss_D: %.2f Loss_G: %.2f Time: %.2fs
-                      '''  
+                      '''
                   % (epoch, self.max_epoch, self.num_batches,
-                     errD_total.data[0], errG_total.data[0],
+                     errD_total.item(), errG_total.item(),
                      end_t - start_t))
 
         save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
@@ -481,7 +482,7 @@ class FineGAN_trainer(object):
                     all_hard_z = Variable(torch.zeros(self.batch_size * repeat_times, nz)).cuda()
                     all_hard_class = Variable(torch.zeros(self.batch_size * repeat_times, cfg.FINE_GRAINED_CATEGORIES)).cuda()
                     all_logits = Variable(torch.zeros(self.batch_size * repeat_times,)).cuda()
-                    
+
                     for hard_it in range(repeat_times):
                             hard_noise = hard_noise.data.normal_(0,1)
                             hard_class = Variable(torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])).cuda()
@@ -499,9 +500,9 @@ class FineGAN_trainer(object):
                             fake_logits = self.netsD[2](self.fg_mk[1].detach())
                             smax_class = softmax(fake_logits[0], dim = 1)
 
-                            for b_it in range(self.batch_size):	
+                            for b_it in range(self.batch_size):
                                     all_logits[(self.batch_size * hard_it) + b_it] = smax_class[b_it][my_rand_id[b_it]]
-                            
+
                     sorted_val, indices_hard = torch.sort(all_logits)
                     noise = all_hard_z[indices_hard[0 : self.batch_size]]
                     self.c_code = all_hard_class[indices_hard[0 : self.batch_size]]
@@ -542,9 +543,9 @@ class FineGAN_trainer(object):
             if (count % 100) == 0:
                 print('''[%d/%d][%d]
                              Loss_D: %.2f Loss_G: %.2f Time: %.2fs
-                          '''  
+                          '''
                       % (count, cfg.TRAIN.HARDNEG_MAX_ITER, self.num_batches,
-                         errD_total.data[0], errG_total.data[0],
+                         errD_total.item(), errG_total.item(),
                          end_t - start_t))
 
             if (count == cfg.TRAIN.HARDNEG_MAX_ITER): # Hard negative training complete
@@ -591,7 +592,7 @@ class FineGAN_evaluator(object):
 
             # Uncomment this to print Generator layers
             # print(netG)
-            
+
             nz = cfg.GAN.Z_DIM
             noise = torch.FloatTensor(self.batch_size, nz)
             noise.data.normal_(0, 1)
@@ -602,8 +603,8 @@ class FineGAN_evaluator(object):
 
             netG.eval()
 
-            background_class = cfg.TEST_BACKGROUND_CLASS 
-            parent_class = cfg.TEST_PARENT_CLASS 
+            background_class = cfg.TEST_BACKGROUND_CLASS
+            parent_class = cfg.TEST_PARENT_CLASS
             child_class = cfg.TEST_CHILD_CLASS
             bg_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
             p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
@@ -628,10 +629,10 @@ class FineGAN_evaluator(object):
 
 
     def save_image(self, images, save_dir, iname):
-        
+
         img_name = '%s.png' % (iname)
         full_path = os.path.join(save_dir, img_name)
-        
+
         if (iname.find('mask') == -1) or (iname.find('foreground') != -1):
             img = images.add(1).div(2).mul(255).clamp(0, 255).byte()
             ndarr = img.permute(1, 2, 0).data.cpu().numpy()
