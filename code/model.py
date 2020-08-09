@@ -284,9 +284,10 @@ def Block3x3_leakRelu(in_planes, out_planes):
 # Downsale the spatial size by a factor of 2
 def downBlock(in_planes, out_planes):
     block = nn.Sequential(
-        nn.Conv2d(in_planes, out_planes, 3, 2, 1, bias=False),
+        nn.Conv2d(in_planes, out_planes, 3, 1, 1, bias=False),
         nn.BatchNorm2d(out_planes),
-        nn.LeakyReLU(0.2, inplace=True)
+        nn.LeakyReLU(0.2, inplace=True),
+        nn.AvgPool2d((2, 2))
     )
     return block
 
@@ -294,29 +295,36 @@ def downBlock(in_planes, out_planes):
 
 def encode_parent_and_child_img(ndf): # Defines the encoder network used for parent and child image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 3, 2, 1, bias=False),
+        nn.Conv2d(ndf // 2, ndf, 3, 1, 1, bias=False),
+        nn.BatchNorm2d(ndf),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf, ndf * 2, 3, 2, 1, bias=False),
+        nn.AvgPool2d((2, 2)),
+        nn.Conv2d(ndf, ndf * 2, 3, 1, 1, bias=False),
         nn.BatchNorm2d(ndf * 2),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf * 2, ndf * 4, 3, 2, 1, bias=False),
+        nn.AvgPool2d((2, 2)),
+        nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 1, bias=False),
         nn.BatchNorm2d(ndf * 4),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf * 4, ndf * 8, 3, 2, 1, bias=False),
+        nn.AvgPool2d((2, 2)),
+        nn.Conv2d(ndf * 4, ndf * 8, 3, 1, 1, bias=False),
         nn.BatchNorm2d(ndf * 8),
-        nn.LeakyReLU(0.2, inplace=True)
+        nn.LeakyReLU(0.2, inplace=True),
+        nn.AvgPool2d((2, 2))
     )
     return encode_img
 
 
 def encode_background_img(ndf): # Defines the encoder network used for background image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 3, 2, 0, bias=False),
+        nn.Conv2d(ndf // 2, ndf, 3, 1, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf, ndf * 2, 3, 2, 0, bias=False),
+        nn.AvgPool2d((2, 2)),
+        nn.Conv2d(ndf, ndf * 2, 3, 1, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
+        nn.AvgPool2d((2, 2)),
         nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True),
+        nn.LeakyReLU(0.2, inplace=True)
     )
     return encode_img
 
