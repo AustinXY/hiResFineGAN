@@ -428,7 +428,7 @@ class FineGAN_trainer(object):
 
                 if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
                     backup_para = copy_G_params(self.netG)
-                    save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
+                    # save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
                     # Save images
                     load_params(self.netG, avg_param_G)
 
