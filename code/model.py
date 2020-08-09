@@ -294,7 +294,7 @@ def downBlock(in_planes, out_planes):
 
 def encode_parent_and_child_img(ndf): # Defines the encoder network used for parent and child image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 4, 2, 1, bias=False),
+        nn.Conv2d(3, ndf, 4, 2, 1, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
         nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
         nn.BatchNorm2d(ndf * 2),
@@ -311,7 +311,7 @@ def encode_parent_and_child_img(ndf): # Defines the encoder network used for par
 
 def encode_background_img(ndf): # Defines the encoder network used for background image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 4, 2, 0, bias=False),
+        nn.Conv2d(3, ndf, 4, 2, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
         nn.Conv2d(ndf, ndf * 2, 4, 2, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
@@ -319,14 +319,6 @@ def encode_background_img(ndf): # Defines the encoder network used for backgroun
         nn.LeakyReLU(0.2, inplace=True),
     )
     return encode_img
-
-
-def fromRGB_layer(out_planes):
-    layer = nn.Sequential(
-        nn.Conv2d(3, out_planes, 1, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True)
-    )
-    return layer
 
 
 class D_NET(nn.Module):
@@ -349,7 +341,6 @@ class D_NET(nn.Module):
         efg = self.ef_dim
 
         if self.stg_no == 0:
-            self.fromRGB = fromRGB_layer(ndf // 2)
             self.patchgan_img_code_s16 = encode_background_img(ndf)
             self.uncond_logits1 = nn.Sequential(
             nn.Conv2d(ndf * 4, 1, kernel_size=4, stride=1),
@@ -359,7 +350,6 @@ class D_NET(nn.Module):
             nn.Sigmoid())
 
         else:
-            self.fromRGB = fromRGB_layer(ndf // 2)
             self.img_code_s16 = encode_parent_and_child_img(ndf)
             self.img_code_s32 = downBlock(ndf * 8, ndf * 16)
             self.img_code_s32_1 = Block3x3_leakRelu(ndf * 16, ndf * 8)
@@ -376,15 +366,13 @@ class D_NET(nn.Module):
     def forward(self, x_var):
 
         if self.stg_no == 0:
-            x_code = self.fromRGB(x_var)
-            x_code = self.patchgan_img_code_s16(x_code)
+            x_code = self.patchgan_img_code_s16(x_var)
             classi_score = self.uncond_logits1(x_code) # Background vs Foreground classification score (0 - background and 1 - foreground)
             rf_score = self.uncond_logits2(x_code) # Real/Fake score for the background image
             return [classi_score, rf_score]
 
         elif self.stg_no > 0:
-            x_code = self.fromRGB(x_var)
-            x_code = self.img_code_s16(x_code)
+            x_code = self.img_code_s16(x_var)
             x_code = self.img_code_s32(x_code)
             x_code = self.img_code_s32_1(x_code)
             h_c_code = self.jointConv(x_code)
