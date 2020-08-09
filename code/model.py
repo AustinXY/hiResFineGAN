@@ -203,7 +203,7 @@ class G_NET(nn.Module):
         self.gf_dim = cfg.GAN.GF_DIM
         self.define_module()
         self.upsampling = Upsample(scale_factor = 2, mode = 'bilinear')
-        self.scale_fimg = nn.UpsamplingBilinear2d(size = [127, 127])
+        self.scale_fimg = nn.UpsamplingBilinear2d(size = [126, 126])
 
     def define_module(self):
 
@@ -236,8 +236,8 @@ class G_NET(nn.Module):
         #Background stage
         h_code1_bg = self.h_net1_bg(z_code, bg_code)
         fake_img1 = self.img_net1_bg(h_code1_bg) # Background image
-        fake_img1_127 = self.scale_fimg(fake_img1) # Resizing fake background image from 128x128 to the resolution which background discriminator expects: 126 x 126.
-        fake_imgs.append(fake_img1_127)
+        fake_img1_126 = self.scale_fimg(fake_img1) # Resizing fake background image from 128x128 to the resolution which background discriminator expects: 126 x 126.
+        fake_imgs.append(fake_img1_126)
 
         #Parent stage
         h_code1 = self.h_net1(z_code, p_code)
