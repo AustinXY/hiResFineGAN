@@ -203,7 +203,7 @@ class G_NET(nn.Module):
         self.gf_dim = cfg.GAN.GF_DIM
         self.define_module()
         self.upsampling = Upsample(scale_factor = 2, mode = 'bilinear')
-        self.scale_fimg = nn.UpsamplingBilinear2d(size = [126, 126])
+        self.scale_fimg = nn.UpsamplingBilinear2d(size = [127, 127])
 
     def define_module(self):
 
@@ -236,8 +236,8 @@ class G_NET(nn.Module):
         #Background stage
         h_code1_bg = self.h_net1_bg(z_code, bg_code)
         fake_img1 = self.img_net1_bg(h_code1_bg) # Background image
-        fake_img1_126 = self.scale_fimg(fake_img1) # Resizing fake background image from 128x128 to the resolution which background discriminator expects: 126 x 126.
-        fake_imgs.append(fake_img1_126)
+        fake_img1_127 = self.scale_fimg(fake_img1) # Resizing fake background image from 128x128 to the resolution which background discriminator expects: 126 x 126.
+        fake_imgs.append(fake_img1_127)
 
         #Parent stage
         h_code1 = self.h_net1(z_code, p_code)
@@ -284,7 +284,7 @@ def Block3x3_leakRelu(in_planes, out_planes):
 # Downsale the spatial size by a factor of 2
 def downBlock(in_planes, out_planes):
     block = nn.Sequential(
-        nn.Conv2d(in_planes, out_planes, 4, 2, 1, bias=False),
+        nn.Conv2d(in_planes, out_planes, 3, 2, 1, bias=False),
         nn.BatchNorm2d(out_planes),
         nn.LeakyReLU(0.2, inplace=True)
     )
@@ -294,15 +294,15 @@ def downBlock(in_planes, out_planes):
 
 def encode_parent_and_child_img(ndf): # Defines the encoder network used for parent and child image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 4, 2, 1, bias=False),
+        nn.Conv2d(ndf // 2, ndf, 3, 2, 1, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
+        nn.Conv2d(ndf, ndf * 2, 3, 2, 1, bias=False),
         nn.BatchNorm2d(ndf * 2),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
+        nn.Conv2d(ndf * 2, ndf * 4, 3, 2, 1, bias=False),
         nn.BatchNorm2d(ndf * 4),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
+        nn.Conv2d(ndf * 4, ndf * 8, 3, 2, 1, bias=False),
         nn.BatchNorm2d(ndf * 8),
         nn.LeakyReLU(0.2, inplace=True)
     )
@@ -311,11 +311,11 @@ def encode_parent_and_child_img(ndf): # Defines the encoder network used for par
 
 def encode_background_img(ndf): # Defines the encoder network used for background image
     encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 4, 2, 0, bias=False),
+        nn.Conv2d(ndf // 2, ndf, 3, 2, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf, ndf * 2, 4, 2, 0, bias=False),
+        nn.Conv2d(ndf, ndf * 2, 3, 2, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.Conv2d(ndf * 2, ndf * 4, 4, 1, 0, bias=False),
+        nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True),
     )
     return encode_img
@@ -352,10 +352,10 @@ class D_NET(nn.Module):
             self.fromRGB = fromRGB_layer(ndf // 2)
             self.patchgan_img_code_s16 = encode_background_img(ndf)
             self.uncond_logits1 = nn.Sequential(
-            nn.Conv2d(ndf * 4, 1, kernel_size=4, stride=1),
+            nn.Conv2d(ndf * 4, 1, kernel_size=3, stride=1),
             nn.Sigmoid())
             self.uncond_logits2 = nn.Sequential(
-            nn.Conv2d(ndf * 4, 1, kernel_size=4, stride=1),
+            nn.Conv2d(ndf * 4, 1, kernel_size=3, stride=1),
             nn.Sigmoid())
 
         else:
