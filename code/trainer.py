@@ -39,15 +39,17 @@ def child_to_parent(child_c_code, classes_child, classes_parent):
 
 def weights_init(m):
     classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
+    if isinstance(m, nn.Conv2d):
         nn.init.orthogonal(m.weight.data, 1.0)
-    elif classname.find('BatchNorm') != -1:
+    elif isinstance(m, nn.BatchNorm2d):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
-    elif classname.find('Linear') != -1:
+    elif isinstance(m, nn.Linear):
         nn.init.orthogonal(m.weight.data, 1.0)
         if m.bias is not None:
             m.bias.data.fill_(0.0)
+    elif classname == 'MnetConv':
+        nn.init.constant_(m.mask_conv.weight.data, 1.0)
 
 
 def load_params(model, new_param):
@@ -198,27 +200,22 @@ class FineGAN_trainer(object):
 
 
     def prepare_data(self, data):
-        fimgs, cimgs, c_code, _, warped_bbox = data
+        fimgs, cimgs, c_code, _, masks = data
 
         real_vfimgs, real_vcimgs = [], []
+
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
-            for i in range(len(warped_bbox)):
-                warped_bbox[i] = Variable(warped_bbox[i]).float().cuda()
-
-        else:
-            vc_code = Variable(c_code)
-            for i in range(len(warped_bbox)):
-                warped_bbox[i] = Variable(warped_bbox[i])
-
-        if cfg.CUDA:
+            masks = Variable(masks).cuda()
             real_vfimgs.append(Variable(fimgs[0]).cuda())
             real_vcimgs.append(Variable(cimgs[0]).cuda())
         else:
+            vc_code = Variable(c_code)
+            masks = Variable(masks)
             real_vfimgs.append(Variable(fimgs[0]))
             real_vcimgs.append(Variable(cimgs[0]))
 
-        return fimgs, real_vfimgs, real_vcimgs, vc_code, warped_bbox
+        return fimgs, real_vfimgs, real_vcimgs, vc_code, masks
 
     def train_Dnet(self, idx, count):
       if idx == 0 or idx == 2: # Discriminator is only trained in background and child stage. (NOT in parent stage)
@@ -229,37 +226,28 @@ class FineGAN_trainer(object):
         netD, optD = self.netsD[idx], self.optimizersD[idx]
         if idx == 0:
             real_imgs = self.real_fimgs[0]
+            masks = self.masks
 
         elif idx == 2:
             real_imgs = self.real_cimgs[0]
+            masks = None
 
         fake_imgs = self.fake_imgs[idx]
         netD.zero_grad()
-        real_logits = netD(real_imgs)
+        real_logits = netD(real_imgs, masks)
 
         if idx == 2:
             fake_labels = torch.zeros_like(real_logits[1])
             real_labels = torch.ones_like(real_logits[1])
         elif idx == 0:
-
             fake_labels = torch.zeros_like(real_logits[1])
-            ext, output = real_logits
+            ext, output, fnl_masks = real_logits
             weights_real = torch.ones_like(output)
             real_labels = torch.ones_like(output)
 
             for i in range(batch_size):
-                x1 =  self.warped_bbox[0][i]
-                x2 =  self.warped_bbox[2][i]
-                y1 =  self.warped_bbox[1][i]
-                y2 =  self.warped_bbox[3][i]
-
-                a1 = max(torch.tensor(0).float().cuda(), torch.ceil((x1 - self.recp_field)/self.patch_stride))
-                a2 = min(torch.tensor(self.n_out - 1).float().cuda(), torch.floor((self.n_out - 1) - ((126 - self.recp_field) - x2)/self.patch_stride))
-                b1 = max(torch.tensor(0).float().cuda(), torch.ceil((y1 - self.recp_field)/self.patch_stride))
-                b2 = min(torch.tensor(self.n_out - 1).float().cuda(), torch.floor((self.n_out - 1) - ((126 - self.recp_field) - y2)/self.patch_stride))
-
-                if (x1 != x2 and y1 != y2):
-                    weights_real[i, :, a1.type(torch.int) : a2.type(torch.int)+1, b1.type(torch.int) : b2.type(torch.int)+1] = 0.0
+                invalid_patch = fnl_masks[i][0] != 0
+                weights_real[i, :].masked_fill_(invalid_patch, 0.0)
 
             norm_fact_real = weights_real.sum()
             norm_fact_fake = weights_real.shape[0]*weights_real.shape[1]*weights_real.shape[2]*weights_real.shape[3]
@@ -402,7 +390,7 @@ class FineGAN_trainer(object):
             for step, data in enumerate(self.data_loader, 0):
 
                 self.imgs_tcpu, self.real_fimgs, self.real_cimgs, \
-                    self.c_code, self.warped_bbox = self.prepare_data(data)
+                    self.c_code, self.masks = self.prepare_data(data)
 
                 # Feedforward through Generator. Obtain stagewise fake images
                 noise.data.normal_(0, 1)

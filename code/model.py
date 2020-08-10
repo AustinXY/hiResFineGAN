@@ -292,7 +292,6 @@ def downBlock(in_planes, out_planes):
     return block
 
 
-
 def encode_parent_and_child_img(ndf): # Defines the encoder network used for parent and child image
     encode_img = nn.Sequential(
         nn.Conv2d(ndf // 2, ndf, 3, 1, 1, bias=False),
@@ -315,18 +314,81 @@ def encode_parent_and_child_img(ndf): # Defines the encoder network used for par
     return encode_img
 
 
-def encode_background_img(ndf): # Defines the encoder network used for background image
-    encode_img = nn.Sequential(
-        nn.Conv2d(ndf // 2, ndf, 3, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True),
-        nn.AvgPool2d((2, 2)),
-        nn.Conv2d(ndf, ndf * 2, 3, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True),
-        nn.AvgPool2d((2, 2)),
-        nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True)
-    )
-    return encode_img
+# def encode_background_img(ndf): # Defines the encoder network used for background image
+#     encode_img = nn.Sequential(
+#         nn.Conv2d(ndf // 2, ndf, 3, 1, 0, bias=False),
+#         nn.LeakyReLU(0.2, inplace=True),
+#         nn.AvgPool2d((2, 2)),
+#         nn.Conv2d(ndf, ndf * 2, 3, 1, 0, bias=False),
+#         nn.LeakyReLU(0.2, inplace=True),
+#         nn.AvgPool2d((2, 2)),
+#         nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 0, bias=False),
+#         nn.LeakyReLU(0.2, inplace=True)
+#     )
+#     return encode_img
+
+
+class MnetConv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
+        super().__init__()
+        self.input_conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
+
+        self.mask_conv = nn.Conv2d(
+            1, 1, kernel_size, stride, padding, dilation, groups, False)
+
+        # mask is not updated
+        for param in self.mask_conv.parameters():
+            param.requires_grad = False
+
+    def forward(self, input, mask):
+        """
+        input is regular tensor with shape N*C*H*W
+        mask has to have 1 channel N*1*H*W
+        """
+        output = self.input_conv(input)
+        if mask != None:
+            mask = self.mask_conv(mask)
+        return output, mask
+
+
+class downBlock_mnet(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
+        super().__init__()
+        self.conv = MnetConv(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
+        # self.bn = nn.BatchNorm2d(out_channels)
+
+    def forward(self, input, mask=None):
+        """
+        input is regular tensor with shape N*C*H*W
+        mask has to have 1 channel N*1*H*W
+        """
+        output, mask = self.conv(input, mask)
+        # output = self.bn(output)
+        output = F.leaky_relu(output, 0.2, inplace=True)
+        output = F.avg_pool2d(output, 2)
+        if mask != None:
+            mask = F.avg_pool2d(mask, 2)
+        return output, mask
+
+
+class encode_background_img_mnet(nn.Module):
+    def __init__(self, ndf, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
+        super().__init__()
+        self.downblock1 = downBlock_mnet(ndf // 2, ndf, kernel_size, stride, padding)
+        self.downblock2 = downBlock_mnet(ndf, ndf * 2, kernel_size, stride, padding)
+        self.conv = MnetConv(ndf * 2, ndf * 4, kernel_size, stride, padding)
+
+    def forward(self, input, mask):
+        """
+        input is regular tensor with shape N*C*H*W
+        mask has to have 1 channel N*1*H*W
+        """
+        output, mask = self.downblock1(input, mask)
+        output, mask = self.downblock2(output, mask)
+        output, mask = self.conv(output, mask)
+        output = F.leaky_relu(output, 0.2, inplace=True)
+        return output, mask
 
 
 def fromRGB_layer(out_planes):
@@ -358,14 +420,9 @@ class D_NET(nn.Module):
 
         if self.stg_no == 0:
             self.fromRGB = fromRGB_layer(ndf // 2)
-            self.patchgan_img_code_s16 = encode_background_img(ndf)
-            self.uncond_logits1 = nn.Sequential(
-            nn.Conv2d(ndf * 4, 1, kernel_size=3, stride=1),
-            nn.Sigmoid())
-            self.uncond_logits2 = nn.Sequential(
-            nn.Conv2d(ndf * 4, 1, kernel_size=3, stride=1),
-            nn.Sigmoid())
-
+            self.patchgan_img_code_s16 = encode_background_img_mnet(ndf, 3, 1, 0)
+            self.conv_uncond_logits1 = MnetConv(ndf * 4, 1, 3, 1, 0)
+            self.conv_uncond_logits2 = MnetConv(ndf * 4, 1, 3, 1, 0)
         else:
             self.fromRGB = fromRGB_layer(ndf // 2)
             self.img_code_s16 = encode_parent_and_child_img(ndf)
@@ -381,14 +438,16 @@ class D_NET(nn.Module):
             nn.Sigmoid())
 
 
-    def forward(self, x_var):
+    def forward(self, x_var, mask=None):
 
         if self.stg_no == 0:
             x_code = self.fromRGB(x_var)
-            x_code = self.patchgan_img_code_s16(x_code)
-            classi_score = self.uncond_logits1(x_code) # Background vs Foreground classification score (0 - background and 1 - foreground)
-            rf_score = self.uncond_logits2(x_code) # Real/Fake score for the background image
-            return [classi_score, rf_score]
+            x_code, mask = self.patchgan_img_code_s16(x_code, mask)
+            _x_code, _mask = self.conv_uncond_logits1(x_code, mask)
+            classi_score = F.sigmoid(_x_code)
+            _x_code, _mask = self.conv_uncond_logits2(x_code, mask)
+            rf_score = F.sigmoid(_x_code)
+            return [classi_score, rf_score, _mask]
 
         elif self.stg_no > 0:
             x_code = self.fromRGB(x_var)
