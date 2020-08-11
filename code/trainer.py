@@ -93,15 +93,18 @@ def load_network(gpus):
         netG.load_state_dict(state_dict)
         print('Load ', cfg.TRAIN.NET_G)
 
-        istart = cfg.TRAIN.NET_G.rfind('_') + 1
-        iend = cfg.TRAIN.NET_G.rfind('.')
+        istart = cfg.TRAIN.NET_G.rfind('netG_') + 5
+        iend = cfg.TRAIN.NET_G.rfind('_depth')
         count = cfg.TRAIN.NET_G[istart:iend]
-        count = int(count) + 1
+        count = int(count)
+        istart = cfg.TRAIN.NET_G.rfind('depth')
+        iend = cfg.TRAIN.NET_G.rfind('.')
+        _depth = cfg.TRAIN.NET_G[istart:iend]
 
     if cfg.TRAIN.NET_D != '':
         for i in range(len(netsD)):
-            print('Load %s_%d.pth' % (cfg.TRAIN.NET_D, i))
-            state_dict = torch.load('%s_%d.pth' % (cfg.TRAIN.NET_D, i))
+            print('Load %s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
+            state_dict = torch.load('%s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
             netsD[i].load_state_dict(state_dict)
 
     if cfg.CUDA:
@@ -395,7 +398,7 @@ class FineGAN_trainer(object):
 
                 start_t = time.time()
                 for step, data in enumerate(dataloader, 0):
-
+                    count += 1
                     _, self.real_fimgs, self.real_cimgs, \
                         self.c_code, self.masks = self.prepare_data(data)
 
@@ -422,8 +425,6 @@ class FineGAN_trainer(object):
                     errG_total = self.train_Gnet(count)
                     for p, avg_p in zip(self.netG.parameters(), avg_param_G):
                         avg_p.mul_(0.999).add_(0.001, p.data)
-
-                    count = count + 1
 
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
                         backup_para = copy_G_params(self.netG)

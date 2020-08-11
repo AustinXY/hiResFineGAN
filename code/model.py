@@ -259,57 +259,57 @@ class G_NET(nn.Module):
         self.define_module()
 
     def define_module(self):
-        ndf = self.gf_dim
+        ngf = self.gf_dim
 
-        self.bg_code_init = INIT_STAGE_G(ndf * 8, c_flag=0)
-        self.bg_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ndf, use_hrc=0)])
-        self.bg_img_net = nn.ModuleList([TO_RGB_LAYER(ndf // 2)])
+        self.bg_code_init = INIT_STAGE_G(ngf * 8, c_flag=0)
+        self.bg_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=0)])
+        self.bg_img_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
 
-        self.p_code_init = INIT_STAGE_G(ndf * 8, c_flag=1)
-        self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ndf, use_hrc=1)])
-        self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ndf // 2)])
-        self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ndf // 2)])
+        self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
+        self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
+        self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
+        self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
 
-        self.c_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ndf // 2, use_hrc=0)])
-        self.c_fg_net = nn.ModuleList([TO_RGB_LAYER(ndf // 4)])
-        self.c_mk_net = nn.ModuleList([TO_GRAY_LAYER(ndf // 4)])
+        self.c_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf // 2, use_hrc=0)])
+        self.c_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 4)])
+        self.c_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 4)])
 
-        ndf = ndf // 2
+        ngf = ngf // 2
 
         for _ in range(start_depth):
-            self.bg_code_net.append(NEXT_STAGE_G_UP(ndf, use_hrc=0))
-            self.bg_img_net.append(TO_RGB_LAYER(ndf // 2))
+            self.bg_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=0))
+            self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
 
-            self.p_code_net.append(NEXT_STAGE_G_UP(ndf, use_hrc=1))
-            self.p_fg_net.append(TO_RGB_LAYER(ndf // 2))
-            self.p_mk_net.append(TO_GRAY_LAYER(ndf // 2))
+            self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
+            self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
+            self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
 
-            self.c_code_net.append(NEXT_STAGE_G_SAME(ndf // 2, use_hrc=0))
-            self.c_fg_net.append(TO_RGB_LAYER(ndf // 4))
-            self.c_mk_net.append(TO_GRAY_LAYER(ndf // 4))
+            self.c_code_net.append(NEXT_STAGE_G_SAME(ngf // 2, use_hrc=0))
+            self.c_fg_net.append(TO_RGB_LAYER(ngf // 4))
+            self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4))
 
-            ndf = ndf // 2
+            ngf = ngf // 2
 
-        self.gf_dim = ndf
+        self.gf_dim = ngf
         self.cur_depth = start_depth
 
     def inc_depth(self):
         # oneline apply should work??
-        ndf = self.gf_dim
+        ngf = self.gf_dim
 
-        self.bg_code_net.append(NEXT_STAGE_G_UP(ndf, use_hrc=0).apply(weights_init))
-        self.bg_img_net.append(TO_RGB_LAYER(ndf // 2).apply(weights_init))
+        self.bg_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=0).apply(weights_init))
+        self.bg_img_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
 
-        self.p_code_net.append(NEXT_STAGE_G_UP(ndf, use_hrc=1).apply(weights_init))
-        self.p_fg_net.append(TO_RGB_LAYER(ndf // 2).apply(weights_init))
-        self.p_mk_net.append(TO_GRAY_LAYER(ndf // 2).apply(weights_init))
+        self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1).apply(weights_init))
+        self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
+        self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
 
-        self.c_code_net.append(NEXT_STAGE_G_SAME(ndf // 2, use_hrc=0).apply(weights_init))
-        self.c_fg_net.append(TO_RGB_LAYER(ndf // 4).apply(weights_init))
-        self.c_mk_net.append(TO_GRAY_LAYER(ndf // 4).apply(weights_init))
+        self.c_code_net.append(NEXT_STAGE_G_SAME(ngf // 2, use_hrc=0).apply(weights_init))
+        self.c_fg_net.append(TO_RGB_LAYER(ngf // 4).apply(weights_init))
+        self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4).apply(weights_init))
 
-        ndf = ndf // 2
-        self.gf_dim = ndf
+        ngf = ngf // 2
+        self.gf_dim = ngf
         self.cur_depth += 1
 
     def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
@@ -495,11 +495,9 @@ class D_NET_BG(nn.Module):
 
     def define_module(self):
         ndf = self.df_dim
-
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
         self.down_net = nn.ModuleList([D_NET_BG_BASE(ndf)])
         ndf = ndf // 2
-
         for _ in range(start_depth):
             self.from_RGB_net.append(fromRGB_layer(ndf))
             self.down_net.append(downBlock_mnet(ndf, ndf * 2, 3, 1, 1))
@@ -513,7 +511,7 @@ class D_NET_BG(nn.Module):
         self.from_RGB_net.append(fromRGB_layer(ndf).apply(weights_init))
         self.down_net.append(downBlock_mnet(ndf, ndf * 2, 3, 1, 1).apply(weights_init))
         ndf = ndf // 2
-        self.gf_dim = ndf
+        self.df_dim = ndf
         self.cur_depth = self.cur_depth + 1
 
     def forward(self, x_var, alpha=None, mask=None):
@@ -601,7 +599,7 @@ class D_NET_PC(nn.Module):
         self.from_RGB_net.append(fromRGB_layer(ndf).apply(weights_init))
         self.down_net.append(downBlock(ndf, ndf * 2, 3, 1, 1).apply(weights_init))
         ndf = ndf // 2
-        self.gf_dim = ndf
+        self.df_dim = ndf
         self.cur_depth = self.cur_depth + 1
 
     def forward(self, x_var, alpha=None, mask=None):
