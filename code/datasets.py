@@ -35,12 +35,14 @@ IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG',
                   '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP']
 
 
+
+
 def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imsize, bbox):
-    c, r = imsize
+def get_mask(imshape, bbox):
+    c, r = imshape
     x1, y1, w, h = bbox
     x2 = x1 + w
     y2 = y1 + h
@@ -72,18 +74,16 @@ def get_imgs(img_path, imsize, bbox=None,
 
     retf = []
     retc = []
-    re_cimg = transforms.Scale(imsize[1])(cimg)
+    re_cimg = transforms.Scale(imsize)(cimg)
 
     retc.append(normalize(re_cimg))
 
-    my_crop_width = 126
-
-    resize = transforms.Resize(int(my_crop_width * 76 / 64))
+    resize = transforms.Resize(int(imsize * 76 / 64))
     re_fimg = resize(fimg)
     re_mk = resize(mask)
 
     i, j, h, w = transforms.RandomCrop.get_params(
-        re_fimg, output_size=(my_crop_width, my_crop_width))
+        re_fimg, output_size=(imsize, imsize))
     re_fimg = TF.crop(re_fimg, i, j, h, w)
     re_mk = TF.crop(re_mk, i, j, h, w)
 
@@ -92,22 +92,19 @@ def get_imgs(img_path, imsize, bbox=None,
         re_mk = TF.hflip(re_mk)
 
     retf.append(normalize(re_fimg))
-    retmk = torch.tensor(np.array(re_mk)).view(1, my_crop_width, -1)
+    retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
     return retf, retc, retmk
 
 
 class Dataset(data.Dataset):
-    def __init__(self, data_dir, base_size=64, transform = None):
+    def __init__(self, data_dir, cur_depth, transform=None):
 
         self.transform = transform
         self.norm = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        self.imsize = []
-        for i in range(cfg.TREE.BRANCH_NUM):
-            self.imsize.append(base_size)
-            base_size = base_size * 2
+        self.imsize = 32 * (2 ** cur_depth)
 
         self.data = []
         self.data_dir = data_dir
@@ -147,7 +144,7 @@ class Dataset(data.Dataset):
         df_filenames = \
             pd.read_csv(filepath, delim_whitespace=True, header=None)
         filenames = df_filenames[1].tolist()
-        filenames =  [fname[:-4] for fname in filenames];
+        filenames =  [fname[:-4] for fname in filenames]
         print('Load filenames from: %s (%d)' % (filepath, len(filenames)))
         return filenames
 
