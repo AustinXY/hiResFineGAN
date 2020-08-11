@@ -41,11 +41,14 @@ def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imsize, bbox, px, py):
+def get_mask(imsize, bbox):
     """
     - px (int): number of pixels to pad horizontally
     - py (int): number of pixels to pad vertically
     """
+    px = cfg.TRAIN.PAD_X
+    py = cfg.TRAIN.PAD_Y
+
     c, r = imsize
     x1, y1, w, h = bbox
     x2 = x1 + w + px
@@ -64,7 +67,7 @@ def get_mask(imsize, bbox, px, py):
 def get_imgs(img_path, imsize, bbox=None,
              transform=None, normalize=None):
     img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox, 4, 4)
+    mask = get_mask(img.size, bbox)
     width, height = img.size
     if bbox is not None:
         r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
