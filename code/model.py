@@ -8,10 +8,6 @@ import torch.nn.functional as F
 from torch.nn import Upsample
 
 start_depth = cfg.TRAIN.START_DEPTH
-end_depth = cfg.TRAIN.END_DEPTH
-batchsize_per_depth = cfg.TRAIN.BATCHSIZE_PER_DEPTH
-blend_epochs_per_depth = cfg.TRAIN.BLEND_EPOCHS_PER_DEPTH
-stable_epochs_per_depth = cfg.TRAIN.STABLE_EPOCHS_PER_DEPTH
 
 
 def weights_init(m):

@@ -74,8 +74,9 @@ def load_network(gpus):
     print(netG)
 
     netsD = []
-    for i in range(3): # 3 discriminators for background, parent and child stage
-        netsD.append(D_NET(i))
+    netsD.append(D_NET_BG)
+    netsD.append(D_NET_PC(1))
+    netsD.append(D_NET_PC(2))
 
     for i in range(len(netsD)):
         netsD[i].apply(weights_init)
@@ -168,7 +169,6 @@ def save_img_results(fake_imgs, count, image_dir, summary_writer):
         summary_writer.flush()
 
 
-
 class FineGAN_trainer(object):
     def __init__(self, output_dir, data_loader, imsize):
         if cfg.TRAIN.FLAG:
@@ -246,8 +246,6 @@ class FineGAN_trainer(object):
             real_logits = ext, output
 
         fake_logits = netD(fake_imgs.detach(), self.alpha)
-
-
 
         if idx == 0: # Background stage
 
@@ -458,7 +456,7 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk = netG(fixed_noise, c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, c_code, self.alpha)
                         save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
                                         count, self.image_dir, self.summary_writer)
                         #
@@ -471,9 +469,47 @@ class FineGAN_trainer(object):
                         end_t - start_t))
 
             save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
-            self.netG.inc_depth()
+            self.update_network()
+
+
+    def update_network(self):
+        self.netG.inc_depth()
+        self.netG = torch.nn.DataParallel(self.netG, device_ids=self.gpus)
+        print(netG)
+
+        for netD in self.netsD:
+            netD.inc_depth()
+            netD = torch.nn.DataParallel(netD, device_ids=self.gpus)
+            print(netD)
+
+        if cfg.CUDA:
+            netG.cuda()
             for netD in self.netsD:
-                netD.inc_depth()
+                netD.cuda()
+
+        self.optimizersD = []
+        for netD in self.netsD:
+            opt = optim.Adam(netD.parameters(),
+                lr=cfg.TRAIN.DISCRIMINATOR_LR,
+                betas=(0.5, 0.999))
+            self.optimizersD.append(opt)
+
+        self.optimizerG = []
+        self.optimizerG.append(optim.Adam(netG.parameters(),
+            lr=cfg.TRAIN.GENERATOR_LR,
+            betas=(0.5, 0.999)))
+
+        for i in range(3):
+            if i == 1:
+                opt = optim.Adam(self.netsD[i].parameters(),
+                    lr=cfg.TRAIN.GENERATOR_LR,
+                    betas=(0.5, 0.999))
+                self.optimizerG.append(opt)
+            elif i == 2:
+                opt = optim.Adam([{'params': self.netsD[i].module.jointConv.parameters()}, {'params': self.netsD[i].module.logits.parameters()}],
+                    lr=cfg.TRAIN.GENERATOR_LR,
+                    betas=(0.5, 0.999))
+                self.optimizerG.append(opt)
 
         # print ("Done with the normal training. Now performing hard negative training..")
         # count = 0
