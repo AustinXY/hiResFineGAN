@@ -140,22 +140,20 @@ def define_optimizers(netG, netsD):
     return optimizerG, optimizersD
 
 
-def save_model(netG, avg_param_G, netsD, epoch, model_dir):
+def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
     load_params(netG, avg_param_G)
     torch.save(
         netG.state_dict(),
-        '%s/netG_%d.pth' % (model_dir, epoch))
+        '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
     for i in range(len(netsD)):
         netD = netsD[i]
-        torch.save(
-            netD.state_dict(),
-            '%s/netD%d.pth' % (model_dir, i))
+        torch.save(netD.state_dict(),
+            '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
     print('Save G/Ds models.')
 
 
 def save_img_results(fake_imgs, count, image_dir, summary_writer, depth):
     num = cfg.TRAIN.VIS_COUNT
-
     for i in range(len(fake_imgs)):
         fake_img = fake_imgs[i][0:num]
 
@@ -169,7 +167,7 @@ def save_img_results(fake_imgs, count, image_dir, summary_writer, depth):
         fake_img_set = (fake_img_set + 1) * 255 / 2
         fake_img_set = fake_img_set.astype(np.uint8)
         summary_writer.flush()
-
+    print('Save image samples.')
 
 class FineGAN_trainer(object):
     def __init__(self, output_dir):
@@ -430,11 +428,11 @@ class FineGAN_trainer(object):
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
-                            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
+                            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
                         for i in range(cur_depth+1):
                             save_img_results((fake_imgs[i*3:i*3+3] + fg_imgs[i*2:i*2+2] \
                                             + mk_imgs[i*2:i*2+2] + fg_mk[i*2:i*2+2]),
@@ -448,7 +446,7 @@ class FineGAN_trainer(object):
                         errD_total.item(), errG_total.item(),
                         end_t - start_t))
 
-            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
+            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
 
