@@ -151,7 +151,7 @@ class INIT_STAGE_G(nn.Module):
 
 class NEXT_STAGE_G_SAME(nn.Module):
     def __init__(self, ngf, use_hrc=1, num_residual=cfg.GAN.R_NUM):
-        super(NEXT_STAGE_G, self).__init__()
+        super().__init__()
         self.gf_dim = ngf
         if use_hrc == 1:  # For parent stage
             self.ef_dim = cfg.SUPER_CATEGORIES
@@ -188,7 +188,7 @@ class NEXT_STAGE_G_SAME(nn.Module):
 
 class NEXT_STAGE_G_UP(nn.Module):
     def __init__(self, ngf, use_hrc=1, num_residual=cfg.GAN.R_NUM):
-        super(NEXT_STAGE_G, self).__init__()
+        super().__init__()
         self.gf_dim = ngf
         if use_hrc == 1:  # For parent stage
             self.ef_dim = cfg.SUPER_CATEGORIES
@@ -226,7 +226,7 @@ class NEXT_STAGE_G_UP(nn.Module):
 
 class TO_RGB_LAYER(nn.Module):
     def __init__(self, ngf):
-        super(GET_IMAGE_G, self).__init__()
+        super().__init__()
         self.gf_dim = ngf
         self.img = nn.Sequential(
             conv3x3(ngf, 3),
@@ -240,7 +240,7 @@ class TO_RGB_LAYER(nn.Module):
 
 class TO_GRAY_LAYER(nn.Module):
     def __init__(self, ngf):
-        super(GET_MASK_G, self).__init__()
+        super().__init__()
         self.gf_dim = ngf
         self.img = nn.Sequential(
             conv3x3(ngf, 1),
@@ -254,7 +254,7 @@ class TO_GRAY_LAYER(nn.Module):
 
 class G_NET(nn.Module):
     def __init__(self):
-        super(G_NET, self).__init__()
+        super().__init__()
         self.gf_dim = 64
         self.define_module()
 
@@ -284,7 +284,7 @@ class G_NET(nn.Module):
             self.p_fg_net.append(TO_RGB_LAYER(ndf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ndf // 2))
 
-            self.c_code_net.append(NEXT_STAGE_G_UP(ndf // 2, use_hrc=0))
+            self.c_code_net.append(NEXT_STAGE_G_SAME(ndf // 2, use_hrc=0))
             self.c_fg_net.append(TO_RGB_LAYER(ndf // 4))
             self.c_mk_net.append(TO_GRAY_LAYER(ndf // 4))
 
@@ -304,15 +304,15 @@ class G_NET(nn.Module):
         self.p_fg_net.append(TO_RGB_LAYER(ndf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ndf // 2).apply(weights_init))
 
-        self.c_code_net.append(NEXT_STAGE_G_UP(ndf // 2, use_hrc=0).apply(weights_init))
+        self.c_code_net.append(NEXT_STAGE_G_SAME(ndf // 2, use_hrc=0).apply(weights_init))
         self.c_fg_net.append(TO_RGB_LAYER(ndf // 4).apply(weights_init))
         self.c_mk_net.append(TO_GRAY_LAYER(ndf // 4).apply(weights_init))
 
         ndf = ndf // 2
         self.gf_dim = ndf
-        self.cur_depth = self.cur_depth + 1
+        self.cur_depth += 1
 
-    def forward(self, z_code, c_code, p_code=None, bg_code=None, alpha=None):
+    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
@@ -341,7 +341,7 @@ class G_NET(nn.Module):
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != 0 and alpha < 1:
-                prev_fake_img1 = fake_imgs[i*3]
+                prev_fake_img1 = fake_imgs[(i-1)*3]
                 prev_fake_img1 = F.upsample(prev_fake_img1, scale_factor=2)  # mode='nearest'
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
             fake_imgs.append(fake_img1)
@@ -350,10 +350,10 @@ class G_NET(nn.Module):
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
             if i == self.cur_depth and i != 0 and alpha < 1:
-                prev_fake_img2_fg = fg_imgs[i*2]
+                prev_fake_img2_fg = fg_imgs[(i-1)*2]
                 prev_fake_img2_fg = F.upsample(prev_fake_img2_fg, scale_factor=2)  # mode='nearest'
                 fake_img2_fg = (1 - alpha) * prev_fake_img2_fg + alpha * fake_img2_fg
-                prev_fake_img2_mk = mk_imgs[i*2]
+                prev_fake_img2_mk = mk_imgs[(i-1)*2]
                 prev_fake_img2_mk = F.upsample(prev_fake_img2_mk, scale_factor=2)  # mode='nearest'
                 fake_img2_mk = (1 - alpha) * prev_fake_img2_mk + alpha * fake_img2_mk
 
@@ -371,10 +371,10 @@ class G_NET(nn.Module):
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
             if i == self.cur_depth and i != 0 and alpha < 1:
-                prev_fake_img3_fg = fg_imgs[i*2+1]
+                prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
                 prev_fake_img3_fg = F.upsample(prev_fake_img3_fg, scale_factor=2)  # mode='nearest'
                 fake_img3_fg = (1 - alpha) * prev_fake_img3_fg + alpha * fake_img3_fg
-                prev_fake_img3_mk = mk_imgs[i*2+1]
+                prev_fake_img3_mk = mk_imgs[(i-1)*2+1]
                 prev_fake_img3_mk = F.upsample(prev_fake_img3_mk, scale_factor=2)  # mode='nearest'
                 fake_img3_mk = (1 - alpha) * prev_fake_img3_mk + alpha * fake_img3_mk
 
@@ -402,18 +402,18 @@ def Block3x3_leakRelu(in_planes, out_planes):
 
 
 # Downsale the spatial size by a factor of 2
-def downBlock(in_planes, out_planes):
+def downBlock(in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
     block = nn.Sequential(
-        nn.Conv2d(in_planes, out_planes, 3, 1, 1, bias=False),
-        nn.BatchNorm2d(out_planes),
+        nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias),
+        nn.BatchNorm2d(out_channels),
         nn.LeakyReLU(0.2, inplace=True),
-        nn.AvgPool2d((2, 2))
+        nn.AvgPool2d(2)
     )
     return block
 
 
 class MnetConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
         super().__init__()
         self.input_conv = nn.Conv2d(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
@@ -457,27 +457,6 @@ class downBlock_mnet(nn.Module):
         return output, mask
 
 
-class encode_background_img_mnet(nn.Module):
-    def __init__(self, ndf, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
-        super().__init__()
-        self.downblock1 = downBlock_mnet(
-            ndf // 2, ndf, kernel_size, stride, padding)
-        self.downblock2 = downBlock_mnet(
-            ndf, ndf * 2, kernel_size, stride, padding)
-        self.conv = MnetConv(ndf * 2, ndf * 4, kernel_size, stride, padding)
-
-    def forward(self, input, mask):
-        """
-        input is regular tensor with shape N*C*H*W
-        mask has to have 1 channel N*1*H*W
-        """
-        output, mask = self.downblock1(input, mask)
-        output, mask = self.downblock2(output, mask)
-        output, mask = self.conv(output, mask)
-        output = F.leaky_relu(output, 0.2, inplace=True)
-        return output, mask
-
-
 def fromRGB_layer(out_planes):
     layer = nn.Sequential(
         nn.Conv2d(3, out_planes, 1, 1, 0, bias=False),
@@ -500,6 +479,7 @@ class D_NET_BG_BASE(nn.Module):
 
     def forward(self, x_code, mask):
         x_code, mask = self.conv(x_code, mask)
+        x_code = F.leaky_relu(x_code, 0.2, inplace=True)
         _x_code, _mask = self.conv_uncond_logits1(x_code, mask)
         classi_score = F.sigmoid(_x_code)
         _x_code, _mask = self.conv_uncond_logits2(x_code, mask)
@@ -510,7 +490,7 @@ class D_NET_BG_BASE(nn.Module):
 class D_NET_BG(nn.Module):
     def __init__(self):
         super().__init__()
-        self.df_dim = 32
+        self.df_dim = 256
         self.define_module()
 
     def define_module(self):
@@ -536,13 +516,13 @@ class D_NET_BG(nn.Module):
         self.gf_dim = ndf
         self.cur_depth = self.cur_depth + 1
 
-    def forward(self, x_var, mask=None, alpha=None):
+    def forward(self, x_var, alpha=None, mask=None):
         x_code = self.from_RGB_net[self.cur_depth](x_var)
         for i in range(self.cur_depth, -1, -1):
             x_code, mask = self.down_net[i](x_code, mask)
             if i == self.cur_depth and i != 0 and alpha < 1:
                 y_var = F.avg_pool2d(x_var, 2)
-                y_code = self.from_RGB_net[i-1](x_var)
+                y_code = self.from_RGB_net[i-1](y_var)
                 x_code = (1 - alpha) * y_code + alpha * x_code
 
         classi_score = x_code[0]
@@ -565,23 +545,21 @@ class D_NET_PC_BASE(nn.Module):
         ndf = self.df_dim
         efg = self.ef_dim
 
-        self.downblock1 = downBlock(ndf, ndf * 2)
-        self.downblock2 = downBlock(ndf * 2, ndf * 4)
-        self.downblock3 = downBlock(ndf * 4, ndf * 8)
-        self.downblock4 = downBlock(ndf * 8, ndf * 16)
+        self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
+        self.downblock2 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
+        self.downblock3 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
         # self.conv = Block3x3_leakRelu(ndf, ndf * 2)
         self.logits = nn.Sequential(
-            nn.Conv2d(ndf * 16, efg, kernel_size=4, stride=4))
-        self.jointConv = Block3x3_leakRelu(ndf * 16, ndf * 16)
+            nn.Conv2d(ndf * 2, efg, kernel_size=4, stride=4))
+        self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
         self.uncond_logits = nn.Sequential(
-            nn.Conv2d(ndf * 16, 1, kernel_size=4, stride=4),
+            nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4),
             nn.Sigmoid())
 
     def forward(self, x_code):
-        x_code = self.downblock1(x_code)  # 64 * 32 * 32
-        x_code = self.downblock2(x_code)  # 128 * 16 * 16
-        x_code = self.downblock3(x_code)  # 256 * 8 * 8
-        x_code = self.downblock4(x_code)  # 512 * 4 * 4
+        x_code = self.downblock1(x_code)  # 512 * 16 * 16
+        x_code = self.downblock2(x_code)  # 512 * 8 * 8
+        x_code = self.downblock3(x_code)  # 512 * 4 * 4
         # x_code = self.conv(x_code)
         h_c_code = self.jointConv(x_code)
         # Predicts the parent code and child code in parent and child stage respectively
@@ -594,7 +572,7 @@ class D_NET_PC_BASE(nn.Module):
 class D_NET_PC(nn.Module):
     def __init__(self, stg_no):
         super().__init__()
-        self.df_dim = 32
+        self.df_dim = 256
         self.stg_no = stg_no
         if self.stg_no == 1:
             self.ef_dim = cfg.SUPER_CATEGORIES
@@ -626,13 +604,13 @@ class D_NET_PC(nn.Module):
         self.gf_dim = ndf
         self.cur_depth = self.cur_depth + 1
 
-    def forward(self, x_var, alpha=None):
+    def forward(self, x_var, alpha=None, mask=None):
         x_code = self.from_RGB_net[self.cur_depth](x_var)
         for i in range(self.cur_depth, -1, -1):
             x_code = self.down_net[i](x_code)
             if i == self.cur_depth and i != 0 and alpha < 1:
                 y_var = F.avg_pool2d(x_var, 2)
-                y_code = self.from_RGB_net[i-1](x_var)
+                y_code = self.from_RGB_net[i-1](y_var)
                 x_code = (1 - alpha) * y_code + alpha * x_code
 
         code_pred = x_code[0]

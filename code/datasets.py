@@ -41,11 +41,21 @@ def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imshape, bbox):
-    c, r = imshape
+def get_mask(imsize, bbox, px, py):
+    """
+    - px (int): number of pixels to pad horizontally
+    - py (int): number of pixels to pad vertically
+    """
+    c, r = imsize
     x1, y1, w, h = bbox
-    x2 = x1 + w
-    y2 = y1 + h
+    x2 = x1 + w + px
+    y2 = y1 + h + py
+    x1 = x1 - px
+    y1 = y1 - py
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(c-1, x2)
+    y2 = min(r-1, y2)
     mk = np.zeros((r, c))
     mk[y1:y2+1, x1:x2+1] = 1
     return Image.fromarray(mk)
@@ -54,7 +64,7 @@ def get_mask(imshape, bbox):
 def get_imgs(img_path, imsize, bbox=None,
              transform=None, normalize=None):
     img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox)
+    mask = get_mask(img.size, bbox, 4, 4)
     width, height = img.size
     if bbox is not None:
         r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
@@ -76,7 +86,7 @@ def get_imgs(img_path, imsize, bbox=None,
     retc = []
     re_cimg = transforms.Scale(imsize)(cimg)
 
-    retc.append(normalize(re_cimg))
+    retc = normalize(re_cimg)
 
     resize = transforms.Resize(int(imsize * 76 / 64))
     re_fimg = resize(fimg)
@@ -91,7 +101,7 @@ def get_imgs(img_path, imsize, bbox=None,
         re_fimg = TF.hflip(re_fimg)
         re_mk = TF.hflip(re_mk)
 
-    retf.append(normalize(re_fimg))
+    retf = normalize(re_fimg)
     retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
     return retf, retc, retmk
 

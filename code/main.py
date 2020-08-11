@@ -78,7 +78,7 @@ if __name__ == "__main__":
             pickle.dump(cfg, pk, protocol=pickle.HIGHEST_PROTOCOL)
 
         from trainer import FineGAN_trainer as trainer
-        algo = trainer(output_dir, dataloader, imsize)
+        algo = trainer(output_dir)
 
         start_t = time.time()
         algo.train()
