@@ -15,7 +15,6 @@ import pickle
 dir_path = (os.path.abspath(os.path.join(os.path.realpath(__file__), './.')))
 sys.path.append(dir_path)
 
-
 from miscc.config import cfg, cfg_from_file
 
 
@@ -78,29 +77,8 @@ if __name__ == "__main__":
         with open(os.path.join(output_dir, pkl_filename), 'wb') as pk:
             pickle.dump(cfg, pk, protocol=pickle.HIGHEST_PROTOCOL)
 
-        bshuffle = True
-
-        # Get data loader
-        imsize = cfg.TREE.BASE_SIZE * (2 ** (cfg.TREE.BRANCH_NUM-1))
-        image_transform = transforms.Compose([
-            transforms.Scale(int(imsize * 76 / 64)),
-            transforms.RandomCrop(imsize),
-            transforms.RandomHorizontalFlip()])
-
-
-        from datasets import Dataset
-        dataset = Dataset(cfg.DATA_DIR,
-                              base_size=cfg.TREE.BASE_SIZE,
-                              transform=image_transform)
-        assert dataset
-        num_gpu = len(cfg.GPU_ID.split(','))
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=cfg.TRAIN.BATCH_SIZE * num_gpu,
-            drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
-
-
         from trainer import FineGAN_trainer as trainer
-        algo = trainer(output_dir, dataloader, imsize)
+        algo = trainer(output_dir)
 
         start_t = time.time()
         algo.train()

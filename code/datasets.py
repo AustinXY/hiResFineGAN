@@ -6,6 +6,7 @@ import sys
 
 import torch.utils.data as data
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
 from PIL import Image
 import PIL
 import os
@@ -34,13 +35,39 @@ IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG',
                   '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP']
 
 
+
+
 def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
+
+
+def get_mask(imsize, bbox):
+    """
+    - px (int): number of pixels to pad horizontally
+    - py (int): number of pixels to pad vertically
+    """
+    px = cfg.TRAIN.PAD_X
+    py = cfg.TRAIN.PAD_Y
+
+    c, r = imsize
+    x1, y1, w, h = bbox
+    x2 = x1 + w + px
+    y2 = y1 + h + py
+    x1 = x1 - px
+    y1 = y1 - py
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(c-1, x2)
+    y2 = min(r-1, y2)
+    mk = np.zeros((r, c))
+    mk[y1:y2+1, x1:x2+1] = 1
+    return Image.fromarray(mk)
 
 
 def get_imgs(img_path, imsize, bbox=None,
              transform=None, normalize=None):
     img = Image.open(img_path).convert('RGB')
+    mask = get_mask(img.size, bbox)
     width, height = img.size
     if bbox is not None:
         r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
@@ -58,80 +85,39 @@ def get_imgs(img_path, imsize, bbox=None,
     if transform is not None:
         cimg = transform(cimg)
 
-    # DBPRINT
-    # print(cimg.size)
-
-
     retf = []
     retc = []
-    re_cimg = transforms.Scale(imsize[1])(cimg)
+    re_cimg = transforms.Scale(imsize)(cimg)
 
-    # DBPRINT
-    # print(re_cimg.size)
+    retc = normalize(re_cimg)
 
+    resize = transforms.Resize(int(imsize * 76 / 64))
+    re_fimg = resize(fimg)
+    re_mk = resize(mask)
 
-    retc.append(normalize(re_cimg))
+    i, j, h, w = transforms.RandomCrop.get_params(
+        re_fimg, output_size=(imsize, imsize))
+    re_fimg = TF.crop(re_fimg, i, j, h, w)
+    re_mk = TF.crop(re_mk, i, j, h, w)
 
-    # We use full image to get background patches
+    if random.random() > 0.5:
+        re_fimg = TF.hflip(re_fimg)
+        re_mk = TF.hflip(re_mk)
 
-    # We resize the full image to be 126 X 126 (instead of 128 X 128)  for the full coverage of the input (full) image by
-    # the receptive fields of the final convolution layer of background discriminator
-
-    my_crop_width = 126
-    re_fimg = transforms.Scale(int(my_crop_width * 76 / 64))(fimg)
-    re_width, re_height = re_fimg.size
-
-    # random cropping
-    x_crop_range = re_width-my_crop_width
-    y_crop_range = re_height-my_crop_width
-
-    crop_start_x = np.random.randint(x_crop_range)
-    crop_start_y = np.random.randint(y_crop_range)
-
-    crop_re_fimg = re_fimg.crop([crop_start_x, crop_start_y, crop_start_x + my_crop_width, crop_start_y + my_crop_width])
-    warped_x1 = bbox[0] * re_width / width
-    warped_y1 = bbox[1] * re_height / height
-    warped_x2 = warped_x1 + (bbox[2] * re_width / width)
-    warped_y2 = warped_y1 + (bbox[3] * re_height / height)
-
-    warped_x1 =min(max(0, warped_x1 - crop_start_x), my_crop_width)
-    warped_y1 =min(max(0, warped_y1 - crop_start_y), my_crop_width)
-    warped_x2 =max(min(my_crop_width, warped_x2 - crop_start_x),0)
-    warped_y2 =max(min(my_crop_width, warped_y2 - crop_start_y),0)
-
-    # random flipping
-    random_flag=np.random.randint(2)
-    if(random_flag == 0):
-        crop_re_fimg = crop_re_fimg.transpose(Image.FLIP_LEFT_RIGHT)
-        flipped_x1 = my_crop_width - warped_x2
-        flipped_x2 = my_crop_width - warped_x1
-        warped_x1 = flipped_x1
-        warped_x2 = flipped_x2
-
-    retf.append(normalize(crop_re_fimg))
-
-    warped_bbox = []
-    warped_bbox.append(warped_y1)
-    warped_bbox.append(warped_x1)
-    warped_bbox.append(warped_y2)
-    warped_bbox.append(warped_x2)
-
-    return retf, retc, warped_bbox
-
+    retf = normalize(re_fimg)
+    retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
+    return retf, retc, retmk
 
 
 class Dataset(data.Dataset):
-    def __init__(self, data_dir, base_size=64, transform = None):
+    def __init__(self, data_dir, cur_depth, transform=None):
 
         self.transform = transform
         self.norm = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        self.imsize = []
-        for i in range(cfg.TREE.BRANCH_NUM):
-            self.imsize.append(base_size)
-            base_size = base_size * 2
+        self.imsize = 32 * (2 ** cur_depth)
 
         self.data = []
         self.data_dir = data_dir
@@ -171,7 +157,7 @@ class Dataset(data.Dataset):
         df_filenames = \
             pd.read_csv(filepath, delim_whitespace=True, header=None)
         filenames = df_filenames[1].tolist()
-        filenames =  [fname[:-4] for fname in filenames];
+        filenames =  [fname[:-4] for fname in filenames]
         print('Load filenames from: %s (%d)' % (filepath, len(filenames)))
         return filenames
 
@@ -184,14 +170,14 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        fimgs, cimgs, warped_bbox = get_imgs(img_name, self.imsize,
+        fimgs, cimgs, masks = get_imgs(img_name, self.imsize,
                         bbox, self.transform, normalize=self.norm)
 
         rand_class= random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1); # Randomly generating child code during training
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES,])
         c_code[rand_class] = 1
 
-        return fimgs, cimgs, c_code, key, warped_bbox
+        return fimgs, cimgs, c_code, key, masks
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]

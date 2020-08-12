@@ -14,15 +14,24 @@ TREE:
 
 TRAIN:
     FLAG: True
-    NET_G: ''  # Specify the generator path to resume training
-    NET_D: ''  # Specify the discriminator path to resume training
-    BATCH_SIZE: 16
+    NET_G: '/home/yang/b10_finegan/output/birds_2020_08_11_15_06_51/Model/netG_72000_depth2.pth'  # Specify the generator path to resume training
+    NET_D: '/home/yang/b10_finegan/output/birds_2020_08_11_15_06_51/Model/netD'  # Specify the discriminator path to resume training
+    # BATCH_SIZE: 16
     MAX_EPOCH: 600
     HARDNEG_MAX_ITER: 1500
-    SNAPSHOT_INTERVAL: 1000
+    SNAPSHOT_INTERVAL: 2000
+    SAVEMODEL_INTERVAL: 8000
     SNAPSHOT_INTERVAL_HARDNEG: 500
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
+
+    PAD_X: 8
+    PAD_Y: 8
+    START_DEPTH: 2 # 32 has depth 0; should match loaded model depth
+    END_DEPTH: 3  # 256 has depth 3
+    BATCHSIZE_PER_DEPTH: [32, 16, 4]
+    BLEND_EPOCHS_PER_DEPTH: [0, 80, 100]
+    STABLE_EPOCHS_PER_DEPTH: [60, 100, 120]
 
 GAN:
     DF_DIM: 64

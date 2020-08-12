@@ -22,8 +22,17 @@ from tensorboardX import FileWriter
 from miscc.config import cfg
 from miscc.utils import mkdir_p
 
-from model import G_NET, D_NET
+from datasets import Dataset
+import torchvision.transforms as transforms
 
+from model import G_NET, D_NET_BG, D_NET_PC
+
+
+start_depth = cfg.TRAIN.START_DEPTH
+end_depth = cfg.TRAIN.END_DEPTH
+batchsize_per_depth = cfg.TRAIN.BATCHSIZE_PER_DEPTH
+blend_epochs_per_depth = cfg.TRAIN.BLEND_EPOCHS_PER_DEPTH
+stable_epochs_per_depth = cfg.TRAIN.STABLE_EPOCHS_PER_DEPTH
 
 # ################## Shared functions ###################
 
@@ -39,15 +48,17 @@ def child_to_parent(child_c_code, classes_child, classes_parent):
 
 def weights_init(m):
     classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
+    if isinstance(m, nn.Conv2d):
         nn.init.orthogonal(m.weight.data, 1.0)
-    elif classname.find('BatchNorm') != -1:
+    elif isinstance(m, nn.BatchNorm2d):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
-    elif classname.find('Linear') != -1:
+    elif isinstance(m, nn.Linear):
         nn.init.orthogonal(m.weight.data, 1.0)
         if m.bias is not None:
             m.bias.data.fill_(0.0)
+    elif classname == 'MnetConv':
+        nn.init.constant_(m.mask_conv.weight.data, 1.0)
 
 
 def load_params(model, new_param):
@@ -66,8 +77,9 @@ def load_network(gpus):
     print(netG)
 
     netsD = []
-    for i in range(3): # 3 discriminators for background, parent and child stage
-        netsD.append(D_NET(i))
+    netsD.append(D_NET_BG())
+    netsD.append(D_NET_PC(1))
+    netsD.append(D_NET_PC(2))
 
     for i in range(len(netsD)):
         netsD[i].apply(weights_init)
@@ -81,15 +93,18 @@ def load_network(gpus):
         netG.load_state_dict(state_dict)
         print('Load ', cfg.TRAIN.NET_G)
 
-        istart = cfg.TRAIN.NET_G.rfind('_') + 1
-        iend = cfg.TRAIN.NET_G.rfind('.')
+        istart = cfg.TRAIN.NET_G.rfind('netG_') + 5
+        iend = cfg.TRAIN.NET_G.rfind('_depth')
         count = cfg.TRAIN.NET_G[istart:iend]
-        count = int(count) + 1
+        count = int(count)
+        istart = cfg.TRAIN.NET_G.rfind('depth')
+        iend = cfg.TRAIN.NET_G.rfind('.')
+        _depth = cfg.TRAIN.NET_G[istart:iend]
 
     if cfg.TRAIN.NET_D != '':
         for i in range(len(netsD)):
-            print('Load %s_%d.pth' % (cfg.TRAIN.NET_D, i))
-            state_dict = torch.load('%s_%d.pth' % (cfg.TRAIN.NET_D, i))
+            print('Load %s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
+            state_dict = torch.load('%s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
             netsD[i].load_state_dict(state_dict)
 
     if cfg.CUDA:
@@ -114,53 +129,40 @@ def define_optimizers(netG, netsD):
                             lr=cfg.TRAIN.GENERATOR_LR,
                             betas=(0.5, 0.999)))
 
-    for i in range(num_Ds):
-        if i==1:
-                opt = optim.Adam(netsD[i].parameters(),
-                lr=cfg.TRAIN.GENERATOR_LR,
-                betas=(0.5, 0.999))
-                optimizerG.append(opt)
-        elif i==2:
-                opt = optim.Adam([{'params':netsD[i].module.jointConv.parameters()},{'params':netsD[i].module.logits.parameters()}],
-                lr=cfg.TRAIN.GENERATOR_LR,
-                betas=(0.5, 0.999))
-                optimizerG.append(opt)
+    opt = optim.Adam(netsD[1].parameters(),
+                     lr=cfg.TRAIN.GENERATOR_LR,
+                     betas=(0.5, 0.999))
+    optimizerG.append(opt)
+
+    opt = optim.Adam([{'params': netsD[2].module.down_net[0].jointConv.parameters()},
+                      {'params': netsD[2].module.down_net[0].logits.parameters()}],
+                     lr=cfg.TRAIN.GENERATOR_LR,
+                     betas=(0.5, 0.999))
+    optimizerG.append(opt)
 
     return optimizerG, optimizersD
 
 
-def save_model(netG, avg_param_G, netsD, epoch, model_dir):
+def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
     load_params(netG, avg_param_G)
     torch.save(
         netG.state_dict(),
-        '%s/netG_%d.pth' % (model_dir, epoch))
+        '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
     for i in range(len(netsD)):
         netD = netsD[i]
-        torch.save(
-            netD.state_dict(),
-            '%s/netD%d.pth' % (model_dir, i))
+        torch.save(netD.state_dict(),
+            '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
     print('Save G/Ds models.')
 
 
-def save_img_results(imgs_tcpu, fake_imgs, num_imgs,
-                     count, image_dir, summary_writer):
+def save_img_results(fake_imgs, count, image_dir, summary_writer, depth):
     num = cfg.TRAIN.VIS_COUNT
-
-    real_img = imgs_tcpu[-1][0:num]
-    vutils.save_image(
-        real_img, '%s/real_samples%09d.png' % (image_dir,count),
-        normalize=True)
-    real_img_set = vutils.make_grid(real_img).numpy()
-    real_img_set = np.transpose(real_img_set, (1, 2, 0))
-    real_img_set = real_img_set * 255
-    real_img_set = real_img_set.astype(np.uint8)
-
     for i in range(len(fake_imgs)):
         fake_img = fake_imgs[i][0:num]
 
         vutils.save_image(
-            fake_img.data, '%s/count_%09d_fake_samples%d.png' %
-            (image_dir, count, i), normalize=True)
+            fake_img.data, '%s/count_%09d_fake_samples%d_depth%d.png' %
+            (image_dir, count, i, depth), normalize=True)
 
         fake_img_set = vutils.make_grid(fake_img.data).cpu().numpy()
 
@@ -168,11 +170,10 @@ def save_img_results(imgs_tcpu, fake_imgs, num_imgs,
         fake_img_set = (fake_img_set + 1) * 255 / 2
         fake_img_set = fake_img_set.astype(np.uint8)
         summary_writer.flush()
-
-
+    print('Save image samples.')
 
 class FineGAN_trainer(object):
-    def __init__(self, output_dir, data_loader, imsize):
+    def __init__(self, output_dir):
         if cfg.TRAIN.FLAG:
             self.model_dir = os.path.join(output_dir, 'Model')
             self.image_dir = os.path.join(output_dir, 'Image')
@@ -188,86 +189,59 @@ class FineGAN_trainer(object):
         torch.cuda.set_device(self.gpus[0])
         cudnn.benchmark = True
 
-        self.batch_size = cfg.TRAIN.BATCH_SIZE * self.num_gpus
-        self.max_epoch = cfg.TRAIN.MAX_EPOCH
-        self.snapshot_interval = cfg.TRAIN.SNAPSHOT_INTERVAL
-
-        self.data_loader = data_loader
-        self.num_batches = len(self.data_loader)
-
-
 
     def prepare_data(self, data):
-        fimgs, cimgs, c_code, _, warped_bbox = data
-
-        real_vfimgs, real_vcimgs = [], []
+        fimgs, cimgs, c_code, _, masks = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
-            for i in range(len(warped_bbox)):
-                warped_bbox[i] = Variable(warped_bbox[i]).float().cuda()
-
+            masks = Variable(masks).cuda()
+            real_vfimgs = Variable(fimgs).cuda()
+            real_vcimgs = Variable(cimgs).cuda()
         else:
             vc_code = Variable(c_code)
-            for i in range(len(warped_bbox)):
-                warped_bbox[i] = Variable(warped_bbox[i])
+            masks = Variable(masks)
+            real_vfimgs = Variable(fimgs)
+            real_vcimgs = Variable(cimgs)
+        return fimgs, real_vfimgs, real_vcimgs, vc_code, masks
 
-        if cfg.CUDA:
-            real_vfimgs.append(Variable(fimgs[0]).cuda())
-            real_vcimgs.append(Variable(cimgs[0]).cuda())
-        else:
-            real_vfimgs.append(Variable(fimgs[0]))
-            real_vcimgs.append(Variable(cimgs[0]))
-
-        return fimgs, real_vfimgs, real_vcimgs, vc_code, warped_bbox
 
     def train_Dnet(self, idx, count):
       if idx == 0 or idx == 2: # Discriminator is only trained in background and child stage. (NOT in parent stage)
         flag = count % 100
-        batch_size = self.real_fimgs[0].size(0)
+        batch_size = self.real_fimgs.size(0)
         criterion, criterion_one = self.criterion, self.criterion_one
 
         netD, optD = self.netsD[idx], self.optimizersD[idx]
         if idx == 0:
-            real_imgs = self.real_fimgs[0]
+            real_imgs = self.real_fimgs
+            masks = self.masks
 
         elif idx == 2:
-            real_imgs = self.real_cimgs[0]
+            real_imgs = self.real_cimgs
+            masks = None
 
         fake_imgs = self.fake_imgs[idx]
         netD.zero_grad()
-        real_logits = netD(real_imgs)
+        real_logits = netD(real_imgs, self.alpha, masks)
 
         if idx == 2:
             fake_labels = torch.zeros_like(real_logits[1])
             real_labels = torch.ones_like(real_logits[1])
         elif idx == 0:
-
             fake_labels = torch.zeros_like(real_logits[1])
-            ext, output = real_logits
+            ext, output, fnl_masks = real_logits
             weights_real = torch.ones_like(output)
             real_labels = torch.ones_like(output)
 
             for i in range(batch_size):
-                x1 =  self.warped_bbox[0][i]
-                x2 =  self.warped_bbox[2][i]
-                y1 =  self.warped_bbox[1][i]
-                y2 =  self.warped_bbox[3][i]
-
-                a1 = max(torch.tensor(0).float().cuda(), torch.ceil((x1 - self.recp_field)/self.patch_stride))
-                a2 = min(torch.tensor(self.n_out - 1).float().cuda(), torch.floor((self.n_out - 1) - ((126 - self.recp_field) - x2)/self.patch_stride)) + 1
-                b1 = max(torch.tensor(0).float().cuda(), torch.ceil((y1 - self.recp_field)/self.patch_stride))
-                b2 = min(torch.tensor(self.n_out - 1).float().cuda(), torch.floor((self.n_out - 1) - ((126 - self.recp_field) - y2)/self.patch_stride)) + 1
-
-                if (x1 != x2 and y1 != y2):
-                    weights_real[i, :, a1.type(torch.int) : a2.type(torch.int) , b1.type(torch.int) : b2.type(torch.int)] = 0.0
+                invalid_patch = fnl_masks[i][0] != 0
+                weights_real[i, :].masked_fill_(invalid_patch, 0.0)
 
             norm_fact_real = weights_real.sum()
             norm_fact_fake = weights_real.shape[0]*weights_real.shape[1]*weights_real.shape[2]*weights_real.shape[3]
             real_logits = ext, output
 
-        fake_logits = netD(fake_imgs.detach())
-
-
+        fake_logits = netD(fake_imgs.detach(), self.alpha)
 
         if idx == 0: # Background stage
 
@@ -281,7 +255,7 @@ class FineGAN_trainer(object):
             errD_fake_uncond = criterion(fake_logits[1], fake_labels)  # Real/Fake loss for 'fake background' (on patch level)
             errD_fake_uncond = errD_fake_uncond.mean()
 
-            if (norm_fact_real > 0):    # Normalizing the real/fake loss for background after accounting the number of masked members in the output.
+            if norm_fact_real > 0:    # Normalizing the real/fake loss for background after accounting the number of masked members in the output.
                 errD_real = errD_real_uncond * ((norm_fact_fake * 1.0) /(norm_fact_real * 1.0))
             else:
                 errD_real = errD_real_uncond
@@ -295,11 +269,11 @@ class FineGAN_trainer(object):
             errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
             errD = errD_real + errD_fake
 
-        if (idx == 0 or idx == 2):
+        if idx == 0 or idx == 2:
               errD.backward()
               optD.step()
 
-        if (flag == 0):
+        if flag == 0:
             summary_D = summary.scalar('D_loss%d' % idx, errD.item())
             self.summary_writer.add_summary(summary_D, count)
             summary_D_real = summary.scalar('D_loss_real_%d' % idx, errD_real.item())
@@ -316,12 +290,11 @@ class FineGAN_trainer(object):
 
         errG_total = 0
         flag = count % 100
-        batch_size = self.real_fimgs[0].size(0)
+        batch_size = self.real_fimgs.size(0)
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
 
         for i in range(self.num_Ds):
-
-            outputs = self.netsD[i](self.fake_imgs[i])
+            outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
 
             if i == 0 or i == 2:  # real/fake loss for background (0) and child (2) stage
                 real_labels = torch.ones_like(outputs[1])
@@ -333,17 +306,17 @@ class FineGAN_trainer(object):
                 errG_total = errG_total + errG
 
             if i == 1: # Mutual information loss for the parent stage (1)
-                pred_p = self.netsD[i](self.fg_mk[i-1])
+                pred_p = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_p[0], torch.nonzero(p_code.long())[:,1])
             elif i == 2: # Mutual information loss for the child stage (2)
-                pred_c = self.netsD[i](self.fg_mk[i-1])
+                pred_c = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1])
 
-            if(i>0):
+            if i > 0:
                 errG_total = errG_total + errG_info
 
             if flag == 0:
-                if i>0:
+                if i > 0:
                   summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
                   self.summary_writer.add_summary(summary_D_class, count)
 
@@ -353,8 +326,26 @@ class FineGAN_trainer(object):
 
         errG_total.backward()
         for myit in range(len(self.netsD)):
-                self.optimizerG[myit].step()
+            self.optimizerG[myit].step()
         return errG_total
+
+    def get_dataloader(self, cur_depth, rel_depth):
+        bshuffle = True
+        imsize = 32 * (2 ** (cur_depth + 1))
+        image_transform = transforms.Compose([
+            transforms.Resize(int(imsize * 76 / 64)),
+            transforms.RandomCrop(imsize),
+            transforms.RandomHorizontalFlip()])
+
+        dataset = Dataset(cfg.DATA_DIR,
+                          cur_depth=cur_depth,
+                          transform=image_transform)
+        assert dataset
+        num_gpu = len(cfg.GPU_ID.split(','))
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=batchsize_per_depth[rel_depth] * num_gpu,
+            drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
+        return dataloader
 
     def train(self):
         self.netG, self.netsD, self.num_Ds, start_count = load_network(self.gpus)
@@ -367,192 +358,242 @@ class FineGAN_trainer(object):
         self.criterion_one = nn.BCELoss()
         self.criterion_class = nn.CrossEntropyLoss()
 
-        self.real_labels = \
-            Variable(torch.FloatTensor(self.batch_size).fill_(1))
-        self.fake_labels = \
-            Variable(torch.FloatTensor(self.batch_size).fill_(0))
-
         nz = cfg.GAN.Z_DIM
-        noise = Variable(torch.FloatTensor(self.batch_size, nz))
-        fixed_noise = \
-            Variable(torch.FloatTensor(self.batch_size, nz).normal_(0, 1))
-        hard_noise = \
-            Variable(torch.FloatTensor(self.batch_size, nz).normal_(0, 1)).cuda()
-
-        self.patch_stride = float(4)    # Receptive field stride given the current discriminator architecture for background stage
-        self.n_out = 24                 # Output size of the discriminator at the background stage; N X N where N = 24
-        self.recp_field = 34            # Receptive field of each of the member of N X N
-
 
         if cfg.CUDA:
             self.criterion.cuda()
             self.criterion_one.cuda()
             self.criterion_class.cuda()
-            self.real_labels = self.real_labels.cuda()
-            self.fake_labels = self.fake_labels.cuda()
-            noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
         print ("Starting normal FineGAN training..")
         count = start_count
-        start_epoch = start_count // (self.num_batches)
 
-        for epoch in range(start_epoch, self.max_epoch):
-            start_t = time.time()
+        for cur_depth in range(start_depth, end_depth+1):
+            rel_depth = cur_depth - start_depth  # relative depth
+            max_epoch = blend_epochs_per_depth[rel_depth] + \
+                stable_epochs_per_depth[rel_depth]
+            dataloader = self.get_dataloader(cur_depth, rel_depth)
+            num_batches = len(dataloader)
 
-            for step, data in enumerate(self.data_loader, 0):
+            depth_ep_ctr = 0  # depth epoch counter
+            batch_size = batchsize_per_depth[rel_depth] * self.num_gpus
 
-                self.imgs_tcpu, self.real_fimgs, self.real_cimgs, \
-                    self.c_code, self.warped_bbox = self.prepare_data(data)
+            noise = Variable(torch.FloatTensor(batch_size, nz))
+            fixed_noise = Variable(torch.FloatTensor(batch_size, nz).normal_(0, 1))
 
-                # Feedforward through Generator. Obtain stagewise fake images
-                noise.data.normal_(0, 1)
-                self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
-                    self.netG(noise, self.c_code)
+            if cfg.CUDA:
+                noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
-                # Obtain the parent code given the child code
-                self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+            start_epoch = start_count // (num_batches)
+            start_count = 0
 
-                # Update Discriminator networks
-                errD_total = 0
-                for i in range(self.num_Ds):
-                    if i == 0 or i == 2: # only at parent and child stage
-                        errD = self.train_Dnet(i, count)
-                        errD_total += errD
+            for epoch in range(start_epoch, max_epoch):
+                depth_ep_ctr += 1
 
-                # Update the Generator networks
-                errG_total = self.train_Gnet(count)
-                for p, avg_p in zip(self.netG.parameters(), avg_param_G):
-                    avg_p.mul_(0.999).add_(0.001, p.data)
+                # switch dataset
+                if depth_ep_ctr < blend_epochs_per_depth[rel_depth]:
+                    self.alpha = depth_ep_ctr / blend_epochs_per_depth[rel_depth]
+                else:
+                    self.alpha = 1
 
-                count = count + 1
-
-                if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                    backup_para = copy_G_params(self.netG)
-                    # save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
-                    # Save images
-                    load_params(self.netG, avg_param_G)
-
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
-                        self.netG(fixed_noise, self.c_code)
-                    save_img_results(self.imgs_tcpu, (self.fake_imgs + self.fg_imgs + self.mk_imgs + self.fg_mk), self.num_Ds,
-                                     count, self.image_dir, self.summary_writer)
-                    #
-                    load_params(self.netG, backup_para)
-
-            end_t = time.time()
-            print('''[%d/%d][%d]
-                         Loss_D: %.2f Loss_G: %.2f Time: %.2fs
-                      '''
-                  % (epoch, self.max_epoch, self.num_batches,
-                     errD_total.item(), errG_total.item(),
-                     end_t - start_t))
-
-        save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
-
-        print ("Done with the normal training. Now performing hard negative training..")
-        count = 0
-        start_t = time.time()
-        for step, data in enumerate(self.data_loader, 0):
-
-            self.imgs_tcpu, self.real_fimgs, self.real_cimgs, \
-                self.c_code, self.warped_bbox = self.prepare_data(data)
-
-            if (count % 2) == 0: # Train on normal batch of images
+                start_t = time.time()
+                for step, data in enumerate(dataloader, 0):
+                    count += 1
+                    _, self.real_fimgs, self.real_cimgs, \
+                        self.c_code, self.masks = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
-                        self.netG(noise, self.c_code)
+                    fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(noise, self.c_code, self.alpha)
 
-                    self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+                    self.fake_imgs = fake_imgs[cur_depth * 3 : cur_depth * 3 + 3]
+                    self.fg_imgs = fg_imgs[cur_depth * 2 : cur_depth * 2 + 2]
+                    self.mk_imgs = mk_imgs[cur_depth * 2 : cur_depth * 2 + 2]
+                    self.fg_mk = fg_mk[cur_depth * 2 : cur_depth * 2 + 2]
 
-                    # Update discriminator networks
-                    errD_total = 0
-                    for i in range(self.num_Ds):
-                            if i == 0 or i == 2:
-                                    errD = self.train_Dnet(i, count)
-                                    errD_total += errD
-
-
-                    # Update the generator network
-                    errG_total = self.train_Gnet(count)
-
-            else: # Train on degenerate images
-                    repeat_times=10
-                    all_hard_z = Variable(torch.zeros(self.batch_size * repeat_times, nz)).cuda()
-                    all_hard_class = Variable(torch.zeros(self.batch_size * repeat_times, cfg.FINE_GRAINED_CATEGORIES)).cuda()
-                    all_logits = Variable(torch.zeros(self.batch_size * repeat_times,)).cuda()
-
-                    for hard_it in range(repeat_times):
-                            hard_noise = hard_noise.data.normal_(0,1)
-                            hard_class = Variable(torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])).cuda()
-                            my_rand_id=[]
-
-                            for c_it in range(self.batch_size):
-                                    rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1);
-                                    hard_class[c_it][rand_class] = 1
-                                    my_rand_id.append(rand_class)
-
-                            all_hard_z[self.batch_size * hard_it : self.batch_size * (hard_it + 1)] = hard_noise.data
-                            all_hard_class[self.batch_size * hard_it : self.batch_size * (hard_it + 1)] = hard_class.data
-                            self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(hard_noise.detach(), hard_class.detach())
-
-                            fake_logits = self.netsD[2](self.fg_mk[1].detach())
-                            smax_class = softmax(fake_logits[0], dim = 1)
-
-                            for b_it in range(self.batch_size):
-                                    all_logits[(self.batch_size * hard_it) + b_it] = smax_class[b_it][my_rand_id[b_it]]
-
-                    sorted_val, indices_hard = torch.sort(all_logits)
-                    noise = all_hard_z[indices_hard[0 : self.batch_size]]
-                    self.c_code = all_hard_class[indices_hard[0 : self.batch_size]]
-
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
-                        self.netG(noise, self.c_code)
-
+                    # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
 
                     # Update Discriminator networks
                     errD_total = 0
                     for i in range(self.num_Ds):
-                            if i == 0 or i == 2:
-                                    errD = self.train_Dnet(i, count)
-                                    errD_total += errD
+                        if i == 0 or i == 2: # only at parent and child stage
+                            errD = self.train_Dnet(i, count)
+                            errD_total += errD
 
-                    # Update generator network
+                    # Update the Generator networks
                     errG_total = self.train_Gnet(count)
-
-            for p, avg_p in zip(self.netG.parameters(), avg_param_G):
+                    for p, avg_p in zip(self.netG.parameters(), avg_param_G):
                         avg_p.mul_(0.999).add_(0.001, p.data)
-            count = count + 1
 
-            if count % cfg.TRAIN.SNAPSHOT_INTERVAL_HARDNEG == 0:
-                backup_para = copy_G_params(self.netG)
-                save_model(self.netG, avg_param_G, self.netsD, count+500000, self.model_dir)
-                load_params(self.netG, avg_param_G)
+                    if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
+                        backup_para = copy_G_params(self.netG)
+                        if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
+                            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+                        # Save images
+                        load_params(self.netG, avg_param_G)
 
-                self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
-                    self.netG(fixed_noise, self.c_code)
-                save_img_results(self.imgs_tcpu, (self.fake_imgs + self.fg_imgs + self.mk_imgs + self.fg_mk), self.num_Ds,
-                                 count, self.image_dir, self.summary_writer)
-                #
-                load_params(self.netG, backup_para)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
+                        for i in range(cur_depth+1):
+                            save_img_results((fake_imgs[i*3:i*3+3] + fg_imgs[i*2:i*2+2] \
+                                            + mk_imgs[i*2:i*2+2] + fg_mk[i*2:i*2+2]),
+                                            count, self.image_dir, self.summary_writer, i)
+                        #
+                        load_params(self.netG, backup_para)
 
-            end_t = time.time()
+                end_t = time.time()
+                print('''[%d/%d][%d]Loss_D: %.2f Loss_G: %.2f Time: %.2fs'''
+                      % (epoch, max_epoch, num_batches,
+                        errD_total.item(), errG_total.item(),
+                        end_t - start_t))
 
-            if (count % 100) == 0:
-                print('''[%d/%d][%d]
-                             Loss_D: %.2f Loss_G: %.2f Time: %.2fs
-                          '''
-                      % (count, cfg.TRAIN.HARDNEG_MAX_ITER, self.num_batches,
-                         errD_total.item(), errG_total.item(),
-                         end_t - start_t))
+            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+            self.update_network()
+            avg_param_G = copy_G_params(self.netG)
 
-            if (count == cfg.TRAIN.HARDNEG_MAX_ITER): # Hard negative training complete
-                    break
 
-        save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
-        self.summary_writer.close()
+    def update_network(self):
+        self.netG.module.inc_depth()
+        # self.netG = torch.nn.DataParallel(self.netG, device_ids=self.gpus)
+        print(self.netG)
+
+        for netD in self.netsD:
+            netD.module.inc_depth()
+            # netD = torch.nn.DataParallel(netD, device_ids=self.gpus)
+            print(netD)
+
+        if cfg.CUDA:
+            self.netG.cuda()
+            for netD in self.netsD:
+                netD.cuda()
+
+        self.optimizersD = []
+        for netD in self.netsD:
+            opt = optim.Adam(netD.parameters(),
+                lr=cfg.TRAIN.DISCRIMINATOR_LR,
+                betas=(0.5, 0.999))
+            self.optimizersD.append(opt)
+
+        self.optimizerG = []
+        self.optimizerG.append(optim.Adam(self.netG.parameters(),
+            lr=cfg.TRAIN.GENERATOR_LR,
+            betas=(0.5, 0.999)))
+
+        opt = optim.Adam(self.netsD[1].parameters(),
+                        lr=cfg.TRAIN.GENERATOR_LR,
+                        betas=(0.5, 0.999))
+        self.optimizerG.append(opt)
+
+        opt = optim.Adam([{'params': self.netsD[2].module.down_net[0].jointConv.parameters()},
+                        {'params': self.netsD[2].module.down_net[0].logits.parameters()}],
+                        lr=cfg.TRAIN.GENERATOR_LR,
+                        betas=(0.5, 0.999))
+        self.optimizerG.append(opt)
+
+        # print ("Done with the normal training. Now performing hard negative training..")
+        # count = 0
+        # start_t = time.time()
+        # for step, data in enumerate(self.data_loader, 0):
+
+        #     _, self.real_fimgs, self.real_cimgs, \
+        #         self.c_code, self.warped_bbox = self.prepare_data(data)
+
+        #     if (count % 2) == 0: # Train on normal batch of images
+
+        #             # Feedforward through Generator. Obtain stagewise fake images
+        #             noise.data.normal_(0, 1)
+        #             self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
+        #                 self.netG(noise, self.c_code)
+
+        #             self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+
+        #             # Update discriminator networks
+        #             errD_total = 0
+        #             for i in range(self.num_Ds):
+        #                     if i == 0 or i == 2:
+        #                             errD = self.train_Dnet(i, count)
+        #                             errD_total += errD
+
+
+        #             # Update the generator network
+        #             errG_total = self.train_Gnet(count)
+
+        #     else: # Train on degenerate images
+        #             repeat_times=10
+        #             all_hard_z = Variable(torch.zeros(self.batch_size * repeat_times, nz)).cuda()
+        #             all_hard_class = Variable(torch.zeros(self.batch_size * repeat_times, cfg.FINE_GRAINED_CATEGORIES)).cuda()
+        #             all_logits = Variable(torch.zeros(self.batch_size * repeat_times,)).cuda()
+
+        #             for hard_it in range(repeat_times):
+        #                     hard_noise = hard_noise.data.normal_(0,1)
+        #                     hard_class = Variable(torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])).cuda()
+        #                     my_rand_id=[]
+
+        #                     for c_it in range(self.batch_size):
+        #                             rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1);
+        #                             hard_class[c_it][rand_class] = 1
+        #                             my_rand_id.append(rand_class)
+
+        #                     all_hard_z[self.batch_size * hard_it : self.batch_size * (hard_it + 1)] = hard_noise.data
+        #                     all_hard_class[self.batch_size * hard_it : self.batch_size * (hard_it + 1)] = hard_class.data
+        #                     self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(hard_noise.detach(), hard_class.detach())
+
+        #                     fake_logits = self.netsD[2](self.fg_mk[1].detach())
+        #                     smax_class = softmax(fake_logits[0], dim = 1)
+
+        #                     for b_it in range(self.batch_size):
+        #                             all_logits[(self.batch_size * hard_it) + b_it] = smax_class[b_it][my_rand_id[b_it]]
+
+        #             sorted_val, indices_hard = torch.sort(all_logits)
+        #             noise = all_hard_z[indices_hard[0 : self.batch_size]]
+        #             self.c_code = all_hard_class[indices_hard[0 : self.batch_size]]
+
+        #             self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
+        #                 self.netG(noise, self.c_code)
+
+        #             self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+
+        #             # Update Discriminator networks
+        #             errD_total = 0
+        #             for i in range(self.num_Ds):
+        #                     if i == 0 or i == 2:
+        #                             errD = self.train_Dnet(i, count)
+        #                             errD_total += errD
+
+        #             # Update generator network
+        #             errG_total = self.train_Gnet(count)
+
+        #     for p, avg_p in zip(self.netG.parameters(), avg_param_G):
+        #                 avg_p.mul_(0.999).add_(0.001, p.data)
+        #     count = count + 1
+
+        #     if count % cfg.TRAIN.SNAPSHOT_INTERVAL_HARDNEG == 0:
+        #         backup_para = copy_G_params(self.netG)
+        #         save_model(self.netG, avg_param_G, self.netsD, count+500000, self.model_dir)
+        #         load_params(self.netG, avg_param_G)
+
+        #         self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = \
+        #             self.netG(fixed_noise, self.c_code)
+        #         save_img_results(_, (self.fake_imgs + self.fg_imgs + self.mk_imgs + self.fg_mk), self.num_Ds,
+        #                          count, self.image_dir, self.summary_writer)
+        #         #
+        #         load_params(self.netG, backup_para)
+
+        #     end_t = time.time()
+
+        #     if (count % 100) == 0:
+        #         print('''[%d/%d][%d]
+        #                      Loss_D: %.2f Loss_G: %.2f Time: %.2fs
+        #                   '''
+        #               % (count, cfg.TRAIN.HARDNEG_MAX_ITER, self.num_batches,
+        #                  errD_total.item(), errG_total.item(),
+        #                  end_t - start_t))
+
+        #     if (count == cfg.TRAIN.HARDNEG_MAX_ITER): # Hard negative training complete
+        #             break
+
+        # save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir)
+        # self.summary_writer.close()
 
 
 
