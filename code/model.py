@@ -417,7 +417,6 @@ class MnetConv(nn.Module):
         super().__init__()
         self.input_conv = nn.Conv2d(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-
         self.mask_conv = nn.Conv2d(
             1, 1, kernel_size, stride, padding, dilation, groups, False)
 
@@ -441,7 +440,7 @@ class downBlock_mnet(nn.Module):
         super().__init__()
         self.conv = MnetConv(in_channels, out_channels,
                              kernel_size, stride, padding, dilation, groups, bias)
-        # self.bn = nn.BatchNorm2d(out_channels)
+        self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, input, mask=None):
         """
@@ -449,7 +448,7 @@ class downBlock_mnet(nn.Module):
         mask has to have 1 channel N*1*H*W
         """
         output, mask = self.conv(input, mask)
-        # output = self.bn(output)
+        output = self.bn(output)
         output = F.leaky_relu(output, 0.2, inplace=True)
         output = F.avg_pool2d(output, 2)
         if mask != None:
@@ -467,6 +466,7 @@ def fromRGB_layer(out_planes):
 
 class D_NET_BG_BASE(nn.Module):
     def __init__(self, ndf):
+
         super().__init__()
         self.df_dim = ndf
         self.define_module()
@@ -585,6 +585,7 @@ class D_NET_PC(nn.Module):
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
         self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
         ndf = ndf // 2
+
 
         for _ in range(start_depth):
             self.from_RGB_net.append(fromRGB_layer(ndf))
