@@ -340,7 +340,7 @@ class G_NET(nn.Module):
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
             fake_img1 = _bg_img_net(h_code_bg)
-            if i == self.cur_depth and i != 0 and alpha < 1:
+            if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img1 = fake_imgs[(i-1)*3]
                 prev_fake_img1 = F.upsample(prev_fake_img1, scale_factor=2)  # mode='nearest'
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
@@ -349,7 +349,7 @@ class G_NET(nn.Module):
             h_code_p = _p_code_net(h_code_p, p_code)
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
-            if i == self.cur_depth and i != 0 and alpha < 1:
+            if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img2_fg = fg_imgs[(i-1)*2]
                 prev_fake_img2_fg = F.upsample(prev_fake_img2_fg, scale_factor=2)  # mode='nearest'
                 fake_img2_fg = (1 - alpha) * prev_fake_img2_fg + alpha * fake_img2_fg
@@ -370,7 +370,7 @@ class G_NET(nn.Module):
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
-            if i == self.cur_depth and i != 0 and alpha < 1:
+            if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
                 prev_fake_img3_fg = F.upsample(prev_fake_img3_fg, scale_factor=2)  # mode='nearest'
                 fake_img3_fg = (1 - alpha) * prev_fake_img3_fg + alpha * fake_img3_fg
@@ -518,7 +518,7 @@ class D_NET_BG(nn.Module):
         x_code = self.from_RGB_net[self.cur_depth](x_var)
         for i in range(self.cur_depth, -1, -1):
             x_code, mask = self.down_net[i](x_code, mask)
-            if i == self.cur_depth and i != 0 and alpha < 1:
+            if i == self.cur_depth and i != start_depth and alpha < 1:
                 y_var = F.avg_pool2d(x_var, 2)
                 y_code = self.from_RGB_net[i-1](y_var)
                 x_code = (1 - alpha) * y_code + alpha * x_code
@@ -606,7 +606,7 @@ class D_NET_PC(nn.Module):
         x_code = self.from_RGB_net[self.cur_depth](x_var)
         for i in range(self.cur_depth, -1, -1):
             x_code = self.down_net[i](x_code)
-            if i == self.cur_depth and i != 0 and alpha < 1:
+            if i == self.cur_depth and i != start_depth and alpha < 1:
                 y_var = F.avg_pool2d(x_var, 2)
                 y_code = self.from_RGB_net[i-1](y_var)
                 x_code = (1 - alpha) * y_code + alpha * x_code
