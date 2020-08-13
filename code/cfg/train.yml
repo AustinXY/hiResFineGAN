@@ -21,8 +21,7 @@ TRAIN:
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
 
-    PAD_X: 8
-    PAD_Y: 8
+    PAD: [30, 26, 21, 10]
     START_DEPTH: 0 # 32 has depth 0; should match loaded model depth
     END_DEPTH: 3  # 256 has depth 3
     BATCHSIZE_PER_DEPTH: [64, 32, 16, 8]
