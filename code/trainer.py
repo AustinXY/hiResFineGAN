@@ -37,6 +37,7 @@ stable_epochs_per_depth = cfg.TRAIN.STABLE_EPOCHS_PER_DEPTH
 # ################## Shared functions ###################
 
 def child_to_parent(child_c_code, classes_child, classes_parent):
+
     ratio = classes_child / classes_parent
     arg_parent = torch.argmax(child_c_code,  dim = 1) / ratio
     parent_c_code = torch.zeros([child_c_code.size(0), classes_parent]).cuda()
@@ -328,7 +329,7 @@ class FineGAN_trainer(object):
             self.optimizerG[myit].step()
         return errG_total
 
-    def get_dataloader(self, cur_depth, rel_depth):
+    def get_dataloader(self, cur_depth):
         bshuffle = True
         imsize = 32 * (2 ** (cur_depth + 1))
         image_transform = transforms.Compose([
@@ -342,12 +343,13 @@ class FineGAN_trainer(object):
         assert dataset
         num_gpu = len(cfg.GPU_ID.split(','))
         dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batchsize_per_depth[rel_depth] * num_gpu,
+            dataset, batch_size=batchsize_per_depth[cur_depth] * num_gpu,
             drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
         return dataloader
 
     def train(self):
         self.netG, self.netsD, self.num_Ds, start_count = load_network(self.gpus)
+        newly_loaded = True
         avg_param_G = copy_G_params(self.netG)
 
         self.optimizerG, self.optimizersD = \
@@ -368,14 +370,13 @@ class FineGAN_trainer(object):
         count = start_count
 
         for cur_depth in range(start_depth, end_depth+1):
-            rel_depth = cur_depth - start_depth  # relative depth
-            max_epoch = blend_epochs_per_depth[rel_depth] + \
-                stable_epochs_per_depth[rel_depth]
-            dataloader = self.get_dataloader(cur_depth, rel_depth)
+            max_epoch = blend_epochs_per_depth[cur_depth] + \
+                stable_epochs_per_depth[cur_depth]
+            dataloader = self.get_dataloader(cur_depth)
             num_batches = len(dataloader)
 
             depth_ep_ctr = 0  # depth epoch counter
-            batch_size = batchsize_per_depth[rel_depth] * self.num_gpus
+            batch_size = batchsize_per_depth[cur_depth] * self.num_gpus
 
             noise = Variable(torch.FloatTensor(batch_size, nz))
             fixed_noise = Variable(torch.FloatTensor(batch_size, nz).normal_(0, 1))
@@ -390,8 +391,8 @@ class FineGAN_trainer(object):
                 depth_ep_ctr += 1
 
                 # switch dataset
-                if depth_ep_ctr < blend_epochs_per_depth[rel_depth]:
-                    self.alpha = depth_ep_ctr / blend_epochs_per_depth[rel_depth]
+                if depth_ep_ctr < blend_epochs_per_depth[cur_depth]:
+                    self.alpha = depth_ep_ctr / blend_epochs_per_depth[cur_depth]
                 else:
                     self.alpha = 1
 
@@ -425,6 +426,7 @@ class FineGAN_trainer(object):
                     for p, avg_p in zip(self.netG.parameters(), avg_param_G):
                         avg_p.mul_(0.999).add_(0.001, p.data)
 
+                    newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -433,9 +435,8 @@ class FineGAN_trainer(object):
                         load_params(self.netG, avg_param_G)
 
                         fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
-                        # for i in range(cur_depth+1):
-                        save_img_results((fake_imgs[cur_depth*3:cur_depth*3+3] + fg_imgs[cur_depth*2:cur_depth*2+2]
-                                          + mk_imgs[cur_depth*2:cur_depth*2+2] + fg_mk[cur_depth*2:cur_depth*2+2]),
+                        save_img_results((fake_imgs[cur_depth*3:cur_depth*3+3] + fg_imgs[cur_depth*2:cur_depth*2+2] \
+                                            + mk_imgs[cur_depth*2:cur_depth*2+2] + fg_mk[cur_depth*2:cur_depth*2+2]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
@@ -446,7 +447,8 @@ class FineGAN_trainer(object):
                         errD_total.item(), errG_total.item(),
                         end_t - start_t))
 
-            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+            if not newly_loaded:
+                save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
 
