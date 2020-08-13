@@ -433,10 +433,10 @@ class FineGAN_trainer(object):
                         load_params(self.netG, avg_param_G)
 
                         fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
-                        for i in range(cur_depth+1):
-                            save_img_results((fake_imgs[i*3:i*3+3] + fg_imgs[i*2:i*2+2] \
-                                            + mk_imgs[i*2:i*2+2] + fg_mk[i*2:i*2+2]),
-                                            count, self.image_dir, self.summary_writer, i)
+                        # for i in range(cur_depth+1):
+                        save_img_results((fake_imgs[cur_depth*3:cur_depth*3+3] + fg_imgs[cur_depth*2:cur_depth*2+2]
+                                          + mk_imgs[cur_depth*2:cur_depth*2+2] + fg_mk[cur_depth*2:cur_depth*2+2]),
+                                         count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
 
