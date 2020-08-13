@@ -35,21 +35,19 @@ IMG_EXTENSIONS = ['.jpg', '.JPG', '.jpeg', '.JPEG',
                   '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP']
 
 
-
-
 def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imsize, bbox):
+def get_mask(imshape, bbox, cur_depth):
     """
     - px (int): number of pixels to pad horizontally
     - py (int): number of pixels to pad vertically
     """
-    px = cfg.TRAIN.PAD_X
-    py = cfg.TRAIN.PAD_Y
+    px = cfg.TRAIN.PAD[cur_depth]
+    py = cfg.TRAIN.PAD[cur_depth]
 
-    c, r = imsize
+    c, r = imshape
     x1, y1, w, h = bbox
     x2 = x1 + w + px
     y2 = y1 + h + py
@@ -64,10 +62,11 @@ def get_mask(imsize, bbox):
     return Image.fromarray(mk)
 
 
-def get_imgs(img_path, imsize, bbox=None,
+def get_imgs(img_path, cur_depth, bbox=None,
              transform=None, normalize=None):
+    imsize = 32 * (2 ** cur_depth)
     img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox)
+    mask = get_mask(img.size, bbox, cur_depth)
     width, height = img.size
     if bbox is not None:
         r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
@@ -116,8 +115,8 @@ class Dataset(data.Dataset):
         self.norm = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-        self.imsize = 32 * (2 ** cur_depth)
+        self.cur_depth = cur_depth
+        # self.imsize = 32 * (2 ** cur_depth)
 
         self.data = []
         self.data_dir = data_dir
@@ -128,8 +127,8 @@ class Dataset(data.Dataset):
         else:
             self.iterator = self.prepair_test_pairs
 
-
     # only used in background stage
+
     def load_bbox(self):
         # Returns a dictionary with image filename as 'key' and its bounding box coordinates as 'value'
 
@@ -151,16 +150,14 @@ class Dataset(data.Dataset):
             filename_bbox[key] = bbox
         return filename_bbox
 
-
     def load_filenames(self, data_dir):
         filepath = os.path.join(data_dir, 'images.txt')
         df_filenames = \
             pd.read_csv(filepath, delim_whitespace=True, header=None)
         filenames = df_filenames[1].tolist()
-        filenames =  [fname[:-4] for fname in filenames]
+        filenames = [fname[:-4] for fname in filenames]
         print('Load filenames from: %s (%d)' % (filepath, len(filenames)))
         return filenames
-
 
     def prepair_training_pairs(self, index):
         key = self.filenames[index]
@@ -170,11 +167,12 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        fimgs, cimgs, masks = get_imgs(img_name, self.imsize,
-                        bbox, self.transform, normalize=self.norm)
+        fimgs, cimgs, masks = get_imgs(img_name, self.cur_depth,
+                                       bbox, self.transform, normalize=self.norm)
 
-        rand_class= random.sample(range(cfg.FINE_GRAINED_CATEGORIES),1); # Randomly generating child code during training
-        c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES,])
+        # Randomly generating child code during training
+        rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
+        c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
 
         return fimgs, cimgs, c_code, key, masks
@@ -188,8 +186,8 @@ class Dataset(data.Dataset):
         data_dir = self.data_dir
         c_code = self.c_code[index, :, :]
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        _, imgs, _ = get_imgs(img_name, self.imsize,
-                        bbox, self.transform, normalize=self.norm)
+        _, imgs, _ = get_imgs(img_name, self.cur_depth,
+                              bbox, self.transform, normalize=self.norm)
 
         return imgs, c_code, key
 
