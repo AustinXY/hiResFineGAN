@@ -37,7 +37,6 @@ stable_epochs_per_depth = cfg.TRAIN.STABLE_EPOCHS_PER_DEPTH
 # ################## Shared functions ###################
 
 def child_to_parent(child_c_code, classes_child, classes_parent):
-
     ratio = classes_child / classes_parent
     arg_parent = torch.argmax(child_c_code,  dim = 1) / ratio
     parent_c_code = torch.zeros([child_c_code.size(0), classes_parent]).cuda()
