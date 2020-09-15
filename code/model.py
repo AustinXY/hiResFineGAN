@@ -466,7 +466,6 @@ def fromRGB_layer(out_planes):
 
 class D_NET_BG_BASE(nn.Module):
     def __init__(self, ndf):
-
         super().__init__()
         self.df_dim = ndf
         self.define_module()
