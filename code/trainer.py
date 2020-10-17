@@ -18,6 +18,7 @@ from torch.nn.functional import softmax, log_softmax
 from torch.nn.functional import cosine_similarity
 from tensorboardX import summary
 from tensorboardX import FileWriter
+import torch.nn.functional as F
 
 from miscc.config import cfg
 from miscc.utils import mkdir_p
@@ -75,12 +76,12 @@ def load_network(gpus):
     netG = torch.nn.DataParallel(netG, device_ids=gpus)
     print(netG)
 
-    netsD = []
-    netsD.append(D_NET_BG())
+    netsD = [None]
+    # netsD.append(D_NET_BG())
     netsD.append(D_NET_PC(1))
     netsD.append(D_NET_PC(2))
 
-    for i in range(len(netsD)):
+    for i in range(1, len(netsD)):
         netsD[i].apply(weights_init)
         netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
         print(netsD[i])
@@ -101,23 +102,23 @@ def load_network(gpus):
         _depth = cfg.TRAIN.NET_G[istart:iend]
 
     if cfg.TRAIN.NET_D != '':
-        for i in range(len(netsD)):
+        for i in range(1, len(netsD)):
             print('Load %s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
             state_dict = torch.load('%s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
             netsD[i].load_state_dict(state_dict)
 
     if cfg.CUDA:
         netG.cuda()
-        for i in range(len(netsD)):
+        for i in range(1, len(netsD)):
             netsD[i].cuda()
 
     return netG, netsD, len(netsD), count
 
 
 def define_optimizers(netG, netsD):
-    optimizersD = []
+    optimizersD = [None]
     num_Ds = len(netsD)
-    for i in range(num_Ds):
+    for i in range(1, num_Ds):
         opt = optim.Adam(netsD[i].parameters(),
                          lr=cfg.TRAIN.DISCRIMINATOR_LR,
                          betas=(0.5, 0.999))
@@ -147,7 +148,7 @@ def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
     torch.save(
         netG.state_dict(),
         '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
-    for i in range(len(netsD)):
+    for i in range(1, len(netsD)):
         netD = netsD[i]
         torch.save(netD.state_dict(),
             '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
@@ -205,72 +206,30 @@ class FineGAN_trainer(object):
 
 
     def train_Dnet(self, idx, count):
-      if idx == 0 or idx == 2: # Discriminator is only trained in background and child stage. (NOT in parent stage)
         flag = count % 100
         batch_size = self.real_fimgs.size(0)
         criterion, criterion_one = self.criterion, self.criterion_one
 
         netD, optD = self.netsD[idx], self.optimizersD[idx]
-        if idx == 0:
-            real_imgs = self.real_fimgs
-            masks = self.masks
 
-        elif idx == 2:
-            real_imgs = self.real_cimgs
-            masks = None
+        real_imgs = self.real_cimgs
+        masks = None
 
         fake_imgs = self.fake_imgs[idx]
         netD.zero_grad()
         real_logits = netD(real_imgs, self.alpha, masks)
 
-        if idx == 2:
-            fake_labels = torch.zeros_like(real_logits[1])
-            real_labels = torch.ones_like(real_logits[1])
-        elif idx == 0:
-            fake_labels = torch.zeros_like(real_logits[1])
-            ext, output, fnl_masks = real_logits
-            weights_real = torch.ones_like(output)
-            real_labels = torch.ones_like(output)
-
-            for i in range(batch_size):
-                invalid_patch = fnl_masks[i][0] != 0
-                weights_real[i, :].masked_fill_(invalid_patch, 0.0)
-
-            norm_fact_real = weights_real.sum()
-            norm_fact_fake = weights_real.shape[0]*weights_real.shape[1]*weights_real.shape[2]*weights_real.shape[3]
-            real_logits = ext, output
+        fake_labels = torch.zeros_like(real_logits[1])
+        real_labels = torch.ones_like(real_logits[1])
 
         fake_logits = netD(fake_imgs.detach(), self.alpha)
 
-        if idx == 0: # Background stage
+        errD_real = criterion_one(real_logits[1], real_labels) # Real/Fake loss for the real image
+        errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
+        errD = errD_real + errD_fake
 
-            errD_real_uncond = criterion(real_logits[1], real_labels)  # Real/Fake loss for 'real background' (on patch level)
-            errD_real_uncond = torch.mul(errD_real_uncond, weights_real)  # Masking output units which correspond to receptive fields which lie within the boundin box
-            errD_real_uncond = errD_real_uncond.mean()
-
-            errD_real_uncond_classi = criterion(real_logits[0], weights_real)  # Background/foreground classification loss
-            errD_real_uncond_classi = errD_real_uncond_classi.mean()
-
-            errD_fake_uncond = criterion(fake_logits[1], fake_labels)  # Real/Fake loss for 'fake background' (on patch level)
-            errD_fake_uncond = errD_fake_uncond.mean()
-
-            if norm_fact_real > 0:    # Normalizing the real/fake loss for background after accounting the number of masked members in the output.
-                errD_real = errD_real_uncond * ((norm_fact_fake * 1.0) /(norm_fact_real * 1.0))
-            else:
-                errD_real = errD_real_uncond
-
-            errD_fake = errD_fake_uncond
-            errD = ((errD_real + errD_fake) * cfg.TRAIN.BG_LOSS_WT) + errD_real_uncond_classi
-
-        if idx == 2:
-
-            errD_real = criterion_one(real_logits[1], real_labels) # Real/Fake loss for the real image
-            errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
-            errD = errD_real + errD_fake
-
-        if idx == 0 or idx == 2:
-              errD.backward()
-              optD.step()
+        errD.backward()
+        optD.step()
 
         if flag == 0:
             summary_D = summary.scalar('D_loss%d' % idx, errD.item())
@@ -284,7 +243,7 @@ class FineGAN_trainer(object):
 
     def train_Gnet(self, count):
         self.netG.zero_grad()
-        for myit in range(len(self.netsD)):
+        for myit in range(1, len(self.netsD)):
              self.netsD[myit].zero_grad()
 
         errG_total = 0
@@ -292,16 +251,12 @@ class FineGAN_trainer(object):
         batch_size = self.real_fimgs.size(0)
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
 
-        for i in range(self.num_Ds):
+        for i in range(1, self.num_Ds):
             outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
 
-            if i == 0 or i == 2:  # real/fake loss for background (0) and child (2) stage
+            if i == 2:  # real/fake loss for background (0) and child (2) stage
                 real_labels = torch.ones_like(outputs[1])
                 errG = criterion_one(outputs[1], real_labels)
-                if i==0:
-                    errG = errG * cfg.TRAIN.BG_LOSS_WT
-                    errG_classi = criterion_one(outputs[0], real_labels) # Background/Foreground classification loss for the fake background image (on patch level)
-                    errG = errG + errG_classi
                 errG_total = errG_total + errG
 
             if i == 1: # Mutual information loss for the parent stage (1)
@@ -319,12 +274,29 @@ class FineGAN_trainer(object):
                   summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
                   self.summary_writer.add_summary(summary_D_class, count)
 
-                if i == 0 or i == 2:
+                if i == 2:
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
+        mk = self.mk_imgs[0]
+        attn = self.attn
+        fg_connectivity = self.calc_connectivity(mk, attn[0])
+        bg_connectivity = self.calc_connectivity(torch.ones_like(mk)-mk, attn[1])
+        conn_loss = - (fg_connectivity + bg_connectivity).mean() / (mk.size(2) * mk.size(3))
+
+        fg_recon_loss = self.reconstruction_loss(mk, attn[0])
+        bg_recon_loss = self.reconstruction_loss(torch.ones_like(mk)-mk, attn[1])
+        recon_loss = (fg_recon_loss + bg_recon_loss) / (mk.size(2) * mk.size(3))
+
+        conn_loss *= 10
+        recon_loss *= 10
+
+        errG_total += conn_loss + recon_loss
+        self.cl = conn_loss
+        self.rl = recon_loss
+
         errG_total.backward()
-        for myit in range(len(self.netsD)):
+        for myit in range(3):
             self.optimizerG[myit].step()
         return errG_total
 
@@ -403,20 +375,21 @@ class FineGAN_trainer(object):
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(noise, self.c_code, self.alpha)
+                    fake_imgs, fg_imgs, mk_imgs, fg_mk, attn = self.netG(noise, self.c_code, self.alpha)
 
                     self.fake_imgs = fake_imgs[cur_depth * 3 : cur_depth * 3 + 3]
                     self.fg_imgs = fg_imgs[cur_depth * 2 : cur_depth * 2 + 2]
                     self.mk_imgs = mk_imgs[cur_depth * 2 : cur_depth * 2 + 2]
                     self.fg_mk = fg_mk[cur_depth * 2 : cur_depth * 2 + 2]
+                    self.attn = attn
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
 
                     # Update Discriminator networks
                     errD_total = 0
-                    for i in range(self.num_Ds):
-                        if i == 0 or i == 2: # only at parent and child stage
+                    for i in range(1, self.num_Ds):
+                        if i == 2: # only at parent and child stage
                             errD = self.train_Dnet(i, count)
                             errD_total += errD
 
@@ -427,13 +400,16 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
+                        print("conn_loss: {:.4f}, recon_loss: {:.4f}, ave_gamma: {:.4f}".
+                              format(self.cl.item(), self.rl.item(), self.netG.module.attn.gamma.mean().item()))
+
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
                             save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
                         save_img_results((fake_imgs[cur_depth*3:cur_depth*3+3] + fg_imgs[cur_depth*2:cur_depth*2+2] \
                                             + mk_imgs[cur_depth*2:cur_depth*2+2] + fg_mk[cur_depth*2:cur_depth*2+2]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
@@ -450,6 +426,44 @@ class FineGAN_trainer(object):
                 save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
+
+
+    def calc_connectivity(self, mask, attention):
+        eps = 1e-12
+        ms = mask.size()
+        # weight_mat = torch.bmm(mask.view(ms[0],ms[2]*ms[3],1), mask.view(ms[0],1,ms[2]*ms[3]))
+
+        # weighted_attn = weight_mat * attention
+        # connectivity = torch.sum(torch.sum(weighted_attn, dim=-1), dim=-1)
+        # attn = attention * attention
+        _attn = attention * attention
+        _mk = torch.sqrt(mask + eps)
+        # connectivity = torch.bmm(torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1)),
+        #                          _mk.view(ms[0], ms[2]*ms[3], 1))
+        connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
+
+        # mk_connectivity = connectivity * torch.sqrt(mask).view(_ms[0],1,_ms[2]*_ms[3])
+        # mk_connectivity = torch.matmul(connectivity, torch.pow((mask).view(_ms[0],_ms[2]*_ms[3],1),1/3))
+        return connectivity
+
+    def reconstruction_loss(self, mask, attention):
+        recon_attn = self.recon_attention(mask)
+        return F.mse_loss(attention, recon_attn, reduction='sum')
+
+    def recon_attention(self, mask):
+        affinity = self.get_affinity(mask)
+        return affinity / torch.sum(affinity, keepdim=True, dim=-1)
+
+    def get_affinity(self, mask):
+        ms = mask.size()
+        # aff1 = mask.view(ms[0],1,ms[2]*ms[3]).repeat(1,ms[2]*ms[3],1)
+        # aff2 = mask.view(ms[0],ms[2]*ms[3],1).repeat(1,1,ms[2]*ms[3])
+        # _aff = torch.abs(aff1 - aff2)
+        # return torch.ones_like(_aff) - _aff
+        _aff = torch.abs(mask.view(ms[0], 1, ms[2]*ms[3]).repeat(
+            1, ms[2]*ms[3], 1) - mask.view(ms[0], ms[2]*ms[3], 1).repeat(1, 1, ms[2]*ms[3]))
+        return torch.ones_like(_aff) - _aff
+
 
 
     def update_network(self):

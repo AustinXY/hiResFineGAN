@@ -1,32 +1,41 @@
 CONFIG_NAME: '3stages'
-DATASET_NAME: 'birds'
+DATASET_NAME: 'CUB'
 DATA_DIR: '../../data/birds'
 SAVE_DIR: '../output/vis'
 GPU_ID: '1'
 WORKERS: 4
 
-SUPER_CATEGORIES: 20   # For CUB
-FINE_GRAINED_CATEGORIES: 200  # For CUB
+SUPER_CATEGORIES: 20
+FINE_GRAINED_CATEGORIES: 200
 TIED_CODES: True   # Do NOT change this to False during training.
 
 TRAIN:
     FLAG: True
-    NET_G: ''  # Specify the generator path to resume training
-    NET_D: ''  # Specify the discriminator path to resume training
+    # NET_G: '../output/lsun-car_2020_09_24_06_13_24/Model/netG_600000_depth2.pth'  # Specify the generator path to resume training
+    # NET_D: '../output/lsun-car_2020_09_24_06_13_24/Model/netD'  # Specify the discriminator path to resume training
+    NET_G: ''
+    NET_D: ''
     MAX_EPOCH: 600
     HARDNEG_MAX_ITER: 1500
-    SNAPSHOT_INTERVAL: 2000
-    SAVEMODEL_INTERVAL: 10000
-    SNAPSHOT_INTERVAL_HARDNEG: 500
+    SNAPSHOT_INTERVAL: 10000
+    SAVEMODEL_INTERVAL: 100000
+    SNAPSHOT_INTERVAL_HARDNEG: 1000
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
+    # BG_LOSS_WT_LCL: 9
+    # BG_LOSS_WT_GLB: 1
+    # BG_CLASSI_WT: 1
+    DATASET_SIZE: 100000
 
-    PAD: [30, 26, 21, 10]
-    START_DEPTH: 0 # 32 has depth 0; should match loaded model depth
-    END_DEPTH: 3  # 256 has depth 3
-    BATCHSIZE_PER_DEPTH: [64, 32, 16, 8]
-    BLEND_EPOCHS_PER_DEPTH: [0, 40, 60, 80]
-    STABLE_EPOCHS_PER_DEPTH: [60, 80, 160, 220]
+    PRE_PAD: False
+    RAND_PAD: True
+    PAD: [1, 1, 1, 1, 1]
+    PAD_ALT: [1, 1, 1, 1, 1]
+    START_DEPTH: 1 # 32 has depth 0; should match loaded model depth
+    END_DEPTH: 1  # 512 has depth 3
+    BATCHSIZE_PER_DEPTH: [32, 8, 8, 3, 1]
+    BLEND_EPOCHS_PER_DEPTH: [0, 0, 0, 35, 35]
+    STABLE_EPOCHS_PER_DEPTH: [60, 100, 100, 60, 200]
 
 GAN:
     DF_DIM: 64
