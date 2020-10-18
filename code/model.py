@@ -585,7 +585,6 @@ class D_NET_PC(nn.Module):
         self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
         ndf = ndf // 2
 
-
         for _ in range(start_depth):
             self.from_RGB_net.append(fromRGB_layer(ndf))
             self.down_net.append(downBlock(ndf, ndf * 2, 3, 1, 1))
