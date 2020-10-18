@@ -39,62 +39,34 @@ def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imshape, bbox):
+def get_mask(imshape, bbox, cur_depth):
     """
-    mask: 0's for foreground
+    - px (int): number of pixels to pad horizontally
+    - py (int): number of pixels to pad vertically
     """
+    px = cfg.TRAIN.PAD[cur_depth]
+    py = cfg.TRAIN.PAD[cur_depth]
+
     c, r = imshape
     x1, y1, w, h = bbox
-    x2 = x1 + w - 1
-    y2 = y1 + h - 1
-    mk = np.ones((r, c))
-    mk[y1: y2 + 1, x1: x2 + 1] = 0
+    x2 = x1 + w + px
+    y2 = y1 + h + py
+    x1 = x1 - px
+    y1 = y1 - py
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(c-1, x2)
+    y2 = min(r-1, y2)
+    mk = np.zeros((r, c))
+    mk[y1:y2+1, x1:x2+1] = 1
     return Image.fromarray(mk)
-
-
-def pad_mask(mask, pad):
-    """
-    - mask (PIL.Image)
-    """
-    c, r = mask.size
-    ys, xs = np.where(np.array(mask) == 0)
-    if len(xs) == 0:
-        bbox = [0, 0, 0, 0]
-        return get_mask(mask.size, bbox)
-
-    if cfg.TRAIN.RAND_PAD and random.random() > 0.8:
-        x1 = min(xs)
-    else:
-        x1 = min(xs) - pad
-        x1 = max(0, x1)
-    if cfg.TRAIN.RAND_PAD and random.random() > 0.8:
-        y1 = min(ys)
-    else:
-        y1 = min(ys) - pad
-        y1 = max(0, y1)
-    if cfg.TRAIN.RAND_PAD and random.random() > 0.8:
-        x2 = max(xs)
-    else:
-        x2 = max(xs) + pad
-        x2 = min(c-1, x2)
-    if cfg.TRAIN.RAND_PAD and random.random() > 0.8:
-        y2 = max(ys)
-    else:
-        y2 = max(ys) + pad
-        y2 = min(r-1, y2)
-
-    bbox = [x1, y1, x2-x1+1, y2-y1+1]
-    return get_mask(mask.size, bbox)
 
 
 def get_imgs(img_path, cur_depth, bbox=None,
              transform=None, normalize=None):
     imsize = 32 * (2 ** cur_depth)
     img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox)
-    if cfg.TRAIN.PRE_PAD:
-        mask = pad_mask(mask, cfg.TRAIN.PAD[cur_depth])
-
+    mask = get_mask(img.size, bbox, cur_depth)
     width, height = img.size
     if bbox is not None:
         r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
@@ -104,6 +76,9 @@ def get_imgs(img_path, cur_depth, bbox=None,
         y2 = np.minimum(height, center_y + r)
         x1 = np.maximum(0, center_x - r)
         x2 = np.minimum(width, center_x + r)
+        fimg = deepcopy(img)
+        fimg_arr = np.array(fimg)
+        fimg = Image.fromarray(fimg_arr)
         cimg = img.crop([x1, y1, x2, y2])
 
     if transform is not None:
@@ -129,51 +104,8 @@ def get_imgs(img_path, cur_depth, bbox=None,
         re_mk = TF.hflip(re_mk)
 
     retf = normalize(re_fimg)
-
-    if not cfg.TRAIN.PRE_PAD:
-        re_mk = pad_mask(re_mk, cfg.TRAIN.PAD_ALT[cur_depth])
-
     retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
     return retf, retc, retmk
-
-
-def get_aux_mask(img_path, cur_depth, bbox=None,
-                 transform=None, normalize=None):
-    imsize = 32 * (2 ** cur_depth)
-    img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox)
-    if cfg.TRAIN.PRE_PAD:
-        mask = pad_mask(mask, cfg.TRAIN.PAD[cur_depth])
-
-    width, height = img.size
-    if bbox is not None:
-        r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
-        center_x = int((2 * bbox[0] + bbox[2]) / 2)
-        center_y = int((2 * bbox[1] + bbox[3]) / 2)
-        y1 = np.maximum(0, center_y - r)
-        y2 = np.minimum(height, center_y + r)
-        x1 = np.maximum(0, center_x - r)
-        x2 = np.minimum(width, center_x + r)
-        fimg = deepcopy(img)
-        fimg_arr = np.array(fimg)
-        fimg = Image.fromarray(fimg_arr)
-
-    resize = transforms.Resize(int(imsize * 76 / 64))
-    re_fimg = resize(fimg)
-    re_mk = resize(mask)
-
-    i, j, h, w = transforms.RandomCrop.get_params(
-        re_fimg, output_size=(imsize, imsize))
-    re_mk = TF.crop(re_mk, i, j, h, w)
-
-    if random.random() > 0.5:
-        re_mk = TF.hflip(re_mk)
-
-    if not cfg.TRAIN.PRE_PAD:
-        re_mk = pad_mask(re_mk, cfg.TRAIN.PAD_ALT[cur_depth])
-
-    retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
-    return retmk
 
 
 class Dataset(data.Dataset):
@@ -196,6 +128,7 @@ class Dataset(data.Dataset):
             self.iterator = self.prepair_test_pairs
 
     # only used in background stage
+
     def load_bbox(self):
         # Returns a dictionary with image filename as 'key' and its bounding box coordinates as 'value'
 
@@ -242,19 +175,7 @@ class Dataset(data.Dataset):
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
 
-        # load exiliary bbox
-        mk_id = random.randint(0, len(self.filenames)-1)
-        key = self.filenames[mk_id]
-        if self.bbox is not None:
-            bbox = self.bbox[key]
-        else:
-            bbox = None
-        data_dir = self.data_dir
-        img_name = '%s/images/%s.jpg' % (data_dir, key)
-        ex_masks = get_aux_mask(img_name, self.cur_depth,
-                                bbox, self.transform, normalize=self.norm)
-
-        return fimgs, cimgs, c_code, key, masks, ex_masks
+        return fimgs, cimgs, c_code, key, masks
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]
