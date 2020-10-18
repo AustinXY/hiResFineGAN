@@ -21,12 +21,12 @@ TRAIN:
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
     CONN_WT: 100000
-    RECON_WT: 100
+    RECON_WT: 10000
 
     PAD: [30, 26, 21, 10]
     START_DEPTH: 1 # 32 has depth 0; should match loaded model depth
     END_DEPTH: 1  # 256 has depth 3
-    BATCHSIZE_PER_DEPTH: [64, 7, 16, 8]
+    BATCHSIZE_PER_DEPTH: [64, 8, 16, 8]
     BLEND_EPOCHS_PER_DEPTH: [0, 0, 60, 80]
     STABLE_EPOCHS_PER_DEPTH: [60, 100, 160, 220]
 
