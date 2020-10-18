@@ -288,8 +288,13 @@ class FineGAN_trainer(object):
         bg_recon_loss = self.reconstruction_loss(torch.ones_like(mk)-mk, attn[1])
         recon_loss = (fg_recon_loss + bg_recon_loss) / (mk.size(2) * mk.size(3))
 
-        conn_loss *= 10
-        recon_loss *= 10
+        # if conn_loss < 1e-3:
+        #     wt = 1e3
+        # else:
+        #     wt = cfg.TRAIN.CONN_WT
+
+        conn_loss *= cfg.TRAIN.CONN_WT
+        recon_loss *= cfg.TRAIN.RECON_WT
 
         errG_total += conn_loss + recon_loss
         self.cl = conn_loss

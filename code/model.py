@@ -435,6 +435,7 @@ class G_NET(nn.Module):
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
+            fake_img3_mk = fake_img2_mk * fake_img3_mk
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
                 prev_fake_img3_fg = F.upsample(
