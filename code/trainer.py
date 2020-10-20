@@ -74,7 +74,7 @@ def load_network(gpus):
     netG = G_NET()
     netG.apply(weights_init)
     netG = torch.nn.DataParallel(netG, device_ids=gpus)
-    print(netG)
+    # print(netG)
 
     netsD = [None]
     # netsD.append(D_NET_BG())
@@ -84,7 +84,7 @@ def load_network(gpus):
     for i in range(1, len(netsD)):
         netsD[i].apply(weights_init)
         netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
-        print(netsD[i])
+        # print(netsD[i])
 
     count = 0
 
@@ -278,26 +278,27 @@ class FineGAN_trainer(object):
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
-        mk = self.mk_imgs[0]
+        fg_mk = self.mk_imgs[0]
+        bg_mk = torch.ones_like(fg_mk) - fg_mk
         attn = self.attn
-        fg_connectivity = self.calc_connectivity(mk, attn[0])
-        bg_connectivity = self.calc_connectivity(torch.ones_like(mk)-mk, attn[1])
-        conn_loss = - (fg_connectivity + bg_connectivity).mean() / (mk.size(2) * mk.size(3))
 
-        fg_recon_loss = self.reconstruction_loss(mk, attn[0])
-        bg_recon_loss = self.reconstruction_loss(torch.ones_like(mk)-mk, attn[1])
-        recon_loss = (fg_recon_loss + bg_recon_loss) / (mk.size(2) * mk.size(3))
+        fg_connectivity = self.calc_connectivity(fg_mk, attn[0])
+        fg_avg_conn = fg_connectivity / torch.sum(fg_mk, dim=(-1, -2))
 
-        # if conn_loss < 1e-3:
-        #     wt = 1e3
-        # else:
-        #     wt = cfg.TRAIN.CONN_WT
+        bg_connectivity = self.calc_connectivity(bg_mk, attn[1])
+        bg_avg_conn = bg_connectivity / torch.sum(bg_mk, dim=(-1, -2))
 
-        conn_loss *= cfg.TRAIN.CONN_WT
-        recon_loss *= cfg.TRAIN.RECON_WT
+        conn_loss = - (fg_avg_conn * cfg.TRAIN.FG_CONN_WT +
+                       bg_avg_conn * cfg.TRAIN.BG_CONN_WT).mean()
+
+        fg_recon_loss = self.reconstruction_loss(fg_mk, attn[0])
+        bg_recon_loss = self.reconstruction_loss(bg_mk, attn[1])
+        recon_loss = (fg_recon_loss + bg_recon_loss) / \
+            (fg_mk.size(2) * fg_mk.size(3)) * cfg.TRAIN.RECON_WT
 
         errG_total += conn_loss + recon_loss
-        self.cl = conn_loss
+        self.fg_cl = (fg_avg_conn * cfg.TRAIN.FG_CONN_WT).mean()
+        self.bg_cl = (bg_avg_conn * cfg.TRAIN.BG_CONN_WT).mean()
         self.rl = recon_loss
 
         errG_total.backward()
@@ -405,8 +406,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("conn_loss: {:.4f}, recon_loss: {:.4f}, ave_gamma: {:.4f}".
-                              format(self.cl.item(), self.rl.item(), self.netG.module.attn.gamma.mean().item()))
+                        print("bg_conn_loss: {}, fg_conn_loss: {}, recon_loss: {}, ave_gamma: {:.4f}".
+                              format(self.bg_cl.item(), self.fg_cl.item(), self.rl.item(), self.netG.module.attn.gamma.mean().item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -442,14 +443,15 @@ class FineGAN_trainer(object):
         # connectivity = torch.sum(torch.sum(weighted_attn, dim=-1), dim=-1)
         # attn = attention * attention
         _attn = attention * attention
-        _mk = torch.sqrt(mask + eps)
+        # _mk = torch.sqrt(mask + eps)
+        _mk = mask * mask
         # connectivity = torch.bmm(torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1)),
         #                          _mk.view(ms[0], ms[2]*ms[3], 1))
         connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
 
         # mk_connectivity = connectivity * torch.sqrt(mask).view(_ms[0],1,_ms[2]*_ms[3])
         # mk_connectivity = torch.matmul(connectivity, torch.pow((mask).view(_ms[0],_ms[2]*_ms[3],1),1/3))
-        return connectivity
+        return torch.sum(connectivity, dim=-1)
 
     def reconstruction_loss(self, mask, attention):
         recon_attn = self.recon_attention(mask)
@@ -470,16 +472,15 @@ class FineGAN_trainer(object):
         return torch.ones_like(_aff) - _aff
 
 
-
     def update_network(self):
         self.netG.module.inc_depth()
         # self.netG = torch.nn.DataParallel(self.netG, device_ids=self.gpus)
-        print(self.netG)
+        # print(self.netG)
 
         for netD in self.netsD:
             netD.module.inc_depth()
             # netD = torch.nn.DataParallel(netD, device_ids=self.gpus)
-            print(netD)
+            # print(netD)
 
         if cfg.CUDA:
             self.netG.cuda()
@@ -706,5 +707,3 @@ class FineGAN_evaluator(object):
             ndarr = np.repeat(ndarr, 3, axis=2)
             im = Image.fromarray(ndarr)
             im.save(full_path)
-
-
