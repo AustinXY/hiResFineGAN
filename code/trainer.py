@@ -297,8 +297,8 @@ class FineGAN_trainer(object):
             (fg_mk.size(2) * fg_mk.size(3)) * cfg.TRAIN.RECON_WT
 
         errG_total += conn_loss + recon_loss
-        self.fg_cl = (fg_avg_conn * cfg.TRAIN.FG_CONN_WT).mean()
-        self.bg_cl = (bg_avg_conn * cfg.TRAIN.BG_CONN_WT).mean()
+        self.fg_cl = fg_avg_conn.mean()
+        self.bg_cl = bg_avg_conn.mean()
         self.rl = recon_loss
 
         errG_total.backward()
