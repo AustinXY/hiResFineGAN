@@ -148,10 +148,10 @@ def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
     torch.save(
         netG.state_dict(),
         '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
-    for i in range(1, len(netsD)):
-        netD = netsD[i]
-        torch.save(netD.state_dict(),
-            '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
+    # for i in range(1, len(netsD)):
+    #     netD = netsD[i]
+    #     torch.save(netD.state_dict(),
+    #         '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
     print('Save G/Ds models.')
 
 
@@ -283,7 +283,7 @@ class FineGAN_trainer(object):
         attn = self.attn
 
         fg_connectivity = self.calc_connectivity(fg_mk, attn[0])
-        fg_avg_conn = fg_connectivity / torch.sum(fg_mk, dim=(-1, -2))
+        fg_avg_conn = fg_connectivity / torch.sum(fg_mk, dim=(-1, -2)) # normalize???
 
         bg_connectivity = self.calc_connectivity(bg_mk, attn[1])
         bg_avg_conn = bg_connectivity / torch.sum(bg_mk, dim=(-1, -2))
@@ -437,21 +437,11 @@ class FineGAN_trainer(object):
     def calc_connectivity(self, mask, attention):
         eps = 1e-12
         ms = mask.size()
-        # weight_mat = torch.bmm(mask.view(ms[0],ms[2]*ms[3],1), mask.view(ms[0],1,ms[2]*ms[3]))
-
-        # weighted_attn = weight_mat * attention
-        # connectivity = torch.sum(torch.sum(weighted_attn, dim=-1), dim=-1)
-        # attn = attention * attention
         _attn = attention * attention
-        # _mk = torch.sqrt(mask + eps)
         _mk = mask * mask
-        # connectivity = torch.bmm(torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1)),
-        #                          _mk.view(ms[0], ms[2]*ms[3], 1))
-        connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
-
-        # mk_connectivity = connectivity * torch.sqrt(mask).view(_ms[0],1,_ms[2]*_ms[3])
-        # mk_connectivity = torch.matmul(connectivity, torch.pow((mask).view(_ms[0],_ms[2]*_ms[3],1),1/3))
-        return torch.sum(connectivity, dim=-1)
+        pix_connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
+        mk_connectivity = torch.bmm(pix_connectivity, mask.view(ms[0], ms[2]*ms[3], 1))
+        return mk_connectivity
 
     def reconstruction_loss(self, mask, attention):
         recon_attn = self.recon_attention(mask)
