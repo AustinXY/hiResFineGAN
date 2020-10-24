@@ -281,12 +281,13 @@ class FineGAN_trainer(object):
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
         attn = self.attn
+        eps = 1e-12
 
         fg_connectivity = self.calc_connectivity(fg_mk, attn[0])
-        fg_avg_conn = fg_connectivity / torch.sum(fg_mk, dim=(-1, -2)) # normalize???
+        fg_avg_conn = fg_connectivity / (torch.sum(fg_mk, dim=(-1, -2)) + eps) # normalize???
 
         bg_connectivity = self.calc_connectivity(bg_mk, attn[1])
-        bg_avg_conn = bg_connectivity / torch.sum(bg_mk, dim=(-1, -2))
+        bg_avg_conn = bg_connectivity / (torch.sum(bg_mk, dim=(-1, -2)) + eps)
 
         conn_loss = - (fg_avg_conn * cfg.TRAIN.FG_CONN_WT +
                        bg_avg_conn * cfg.TRAIN.BG_CONN_WT).mean()
@@ -438,7 +439,7 @@ class FineGAN_trainer(object):
         eps = 1e-12
         ms = mask.size()
         _attn = attention * attention
-        _mk = mask * mask
+        _mk = torch.sqrt(mask + eps)
         pix_connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
         mk_connectivity = torch.bmm(pix_connectivity, mask.view(ms[0], ms[2]*ms[3], 1))
         return mk_connectivity
@@ -448,8 +449,9 @@ class FineGAN_trainer(object):
         return F.mse_loss(attention, recon_attn, reduction='sum')
 
     def recon_attention(self, mask):
+        eps = 1e-12
         affinity = self.get_affinity(mask)
-        return affinity / torch.sum(affinity, keepdim=True, dim=-1)
+        return affinity / (torch.sum(affinity, keepdim=True, dim=-1) + eps)
 
     def get_affinity(self, mask):
         ms = mask.size()
