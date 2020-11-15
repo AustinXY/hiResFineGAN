@@ -294,8 +294,7 @@ class FineGAN_trainer(object):
 
         fg_recon_loss = self.reconstruction_loss(fg_mk, attn[0])
         bg_recon_loss = self.reconstruction_loss(bg_mk, attn[1])
-        recon_loss = (fg_recon_loss + bg_recon_loss) / \
-            (fg_mk.size(2) * fg_mk.size(3)) * cfg.TRAIN.RECON_WT
+        recon_loss = (fg_recon_loss + bg_recon_loss).mean() * cfg.TRAIN.RECON_WT
 
         errG_total += conn_loss + recon_loss
         self.fg_cl = fg_avg_conn.mean()
@@ -442,11 +441,15 @@ class FineGAN_trainer(object):
         _mk = torch.sqrt(mask + eps)
         pix_connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
         mk_connectivity = torch.bmm(pix_connectivity, mask.view(ms[0], ms[2]*ms[3], 1))
-        return mk_connectivity
+        return mk_connectivity.view(-1, 1)
 
     def reconstruction_loss(self, mask, attention):
+        eps = 1
+        ms = mask.size()
         recon_attn = self.recon_attention(mask)
-        return F.mse_loss(attention, recon_attn, reduction='sum')
+        sq_diff = (recon_attn - attention)**2
+        wtd_diff = (mask**2).view(ms[0], ms[2]*ms[3], 1) * sq_diff
+        return torch.sum(wtd_diff, dim=(1, 2)).view(ms[0], 1) / (torch.sum(mask, dim=(-1, -2))+eps)
 
     def recon_attention(self, mask):
         eps = 1e-12

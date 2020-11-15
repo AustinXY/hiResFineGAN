@@ -1,6 +1,6 @@
 CONFIG_NAME: '3stages'
-DATASET_NAME: 'CUB'
-DATA_DIR: '../../data/birds'
+DATASET_NAME: 'stanford-car'
+DATA_DIR: '../../data/cars'
 SAVE_DIR: '../output/vis'
 GPU_ID: '1'
 WORKERS: 4
@@ -20,9 +20,9 @@ TRAIN:
     SNAPSHOT_INTERVAL_HARDNEG: 500
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
-    BG_CONN_WT: 100.
-    FG_CONN_WT: 100.
-    RECON_WT: 1.
+    BG_CONN_WT: 1.
+    FG_CONN_WT: 1.
+    RECON_WT: 10.
 
     PAD: [30, 26, 21, 10]
     START_DEPTH: 1 # 32 has depth 0; should match loaded model depth
