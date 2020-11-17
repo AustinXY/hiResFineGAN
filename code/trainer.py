@@ -438,10 +438,10 @@ class FineGAN_trainer(object):
     def calc_connectivity(self, mask, attention):
         eps = 1e-12
         ms = mask.size()
-        _attn = attention * attention
-        _mk = torch.sqrt(mask + eps)
-        pix_connectivity = torch.bmm(_mk.view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
-        mk_connectivity = torch.bmm(pix_connectivity, mask.view(ms[0], ms[2]*ms[3], 1))
+        _attn = attention**2
+        # _mk = mask ** 4
+        pix_connectivity = torch.bmm((mask).view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
+        mk_connectivity = torch.bmm(pix_connectivity, (mask**2).view(ms[0], ms[2]*ms[3], 1))
         return mk_connectivity
 
     def reconstruction_loss(self, mask, attention):
