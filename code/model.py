@@ -25,6 +25,26 @@ def weights_init(m):
         nn.init.constant_(m.mask_conv.weight.data, 1.0)
 
 
+class AbstractPerturber(object):
+    def __init__(self):
+        pass
+
+    def perturb(self, *input):
+        raise NotImplementedError
+
+    def __call__(self, *input, **kwargs):
+        return self.perturb(*input, **kwargs)
+
+    def perturbs(self):
+        ''' Returns array of bool indicating which arguments are perturbed '''
+        raise NotImplementedError
+
+
+class LayeredPerturber(AbstractPerturber):
+    def perturb(self, bg, fg_mask):
+        raise NotImplementedError
+
+
 class GLU(nn.Module):
     def __init__(self):
         super(GLU, self).__init__()
@@ -252,55 +272,17 @@ class TO_GRAY_LAYER(nn.Module):
         return out_img
 
 
-class Self_Attn(nn.Module):
-    """ Self attention Layer"""
-
-    def __init__(self, in_dim, activation):
-        super(Self_Attn, self).__init__()
-        self.chanel_in = in_dim
-        self.activation = activation
-
-        self.query_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//4, kernel_size=1)
-        self.key_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//4, kernel_size=1)
-        self.value_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        """
-            inputs :
-                x : input feature maps( B X C X W X H)
-            returns :
-                out : self attention value + input feature
-                attention: B X N X N (N is Width*Height)
-        """
-        # return x, None
-        m_batchsize, C, width, height = x.size()
-        proj_query = self.query_conv(x).view(
-            m_batchsize, -1, width*height).permute(0, 2, 1)  # B X CX(N)
-        proj_key = self.key_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C x (*W*H)
-        energy = torch.bmm(proj_query, proj_key)  # transpose check
-        attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C X N
-
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
-
-        out = self.gamma*out + x
-        return out, attention
-
 
 class G_NET(nn.Module):
     def __init__(self):
         super().__init__()
         self.gf_dim = 64
         self.define_module()
+
+        resolution = 32 * 2**start_depth
+        location_jitter = 0.125
+        location_noise_fn = lambda *size, resolution, device=torch.device('cpu'): 2*location_jitter*resolution*torch.rand(*size, device=device)-location_jitter*resolution
+        self.pertuber = RandomShift(location_noise_fn)
 
     def define_module(self):
         ngf = self.gf_dim
@@ -311,7 +293,6 @@ class G_NET(nn.Module):
 
         self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
         self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
-        self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
@@ -328,7 +309,6 @@ class G_NET(nn.Module):
             self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
 
             self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
-            self.attn = Self_Attn(ngf // 2, 'relu')
 
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
@@ -352,7 +332,6 @@ class G_NET(nn.Module):
 
         self.p_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=1).apply(weights_init))
-        self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
@@ -393,9 +372,6 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            if i == self.cur_depth:
-                h_code_bg, bg_attn = self.attn(h_code_bg)
-
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img1 = fake_imgs[(i-1)*3]
@@ -405,9 +381,6 @@ class G_NET(nn.Module):
             fake_imgs.append(fake_img1)
 
             h_code_p = _p_code_net(h_code_p, p_code)
-            if i == self.cur_depth:
-                h_code_p, fg_attn = self.attn(h_code_p)
-
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -421,16 +394,6 @@ class G_NET(nn.Module):
                     prev_fake_img2_mk, scale_factor=2)  # mode='nearest'
                 fake_img2_mk = (1 - alpha) * \
                     prev_fake_img2_mk + alpha * fake_img2_mk
-
-            ones_mask_p = torch.ones_like(fake_img2_mk)
-            opp_mask_p = ones_mask_p - fake_img2_mk
-            fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
-            fg_mk.append(fg_masked2)
-            bg_masked2 = torch.mul(fake_img1, opp_mask_p)
-            fake_img2_final = fg_masked2 + bg_masked2  # Parent image
-            fake_imgs.append(fake_img2_final)
-            fg_imgs.append(fake_img2_fg)
-            mk_imgs.append(fake_img2_mk)
 
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
@@ -447,17 +410,78 @@ class G_NET(nn.Module):
                 fake_img3_mk = (1 - alpha) * \
                     prev_fake_img3_mk + alpha * fake_img3_mk
 
-            ones_mask_c = torch.ones_like(fake_img3_mk)
-            opp_mask_c = ones_mask_c - fake_img3_mk
-            fg_masked3 = torch.mul(fake_img3_fg, fake_img3_mk)
-            fg_mk.append(fg_masked3)
-            bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
-            fake_img3_final = fg_masked3 + bg_masked3  # Child image
-            fake_imgs.append(fake_img3_final)
-            fg_imgs.append(fake_img3_fg)
-            mk_imgs.append(fake_img3_mk)
+            if i == self.cur_depth:
+                _fake_img1, _fg = self.pertuber(fake_img1, (fake_img2_fg, fake_img2_mk, fake_img3_fg, fake_img3_mk))
+                (_fake_img2_fg, _fake_img2_mk, _fake_img3_fg, _fake_img3_mk) = _fg
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [fg_attn, bg_attn]
+                ones_mask_p = torch.ones_like(_fake_img2_mk)
+                opp_mask_p = ones_mask_p - _fake_img2_mk
+                fg_masked2 = torch.mul(_fake_img2_fg, _fake_img2_mk)
+                fg_mk.append(fg_masked2)
+                bg_masked2 = torch.mul(_fake_img1, opp_mask_p)
+                fake_img2_final = fg_masked2 + bg_masked2  # Parent image
+                fake_imgs.append(fake_img2_final)
+                fg_imgs.append(fake_img2_fg)
+                mk_imgs.append(fake_img2_mk)
+
+                ones_mask_c = torch.ones_like(_fake_img3_mk)
+                opp_mask_c = ones_mask_c - _fake_img3_mk
+                fg_masked3 = torch.mul(_fake_img3_fg, _fake_img3_mk)
+                fg_mk.append(fg_masked3)
+                bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
+                fake_img3_final = fg_masked3 + bg_masked3  # Child image
+                fake_imgs.append(fake_img3_final)
+                fg_imgs.append(fake_img3_fg)
+                mk_imgs.append(fake_img3_mk)
+            else:
+                ones_mask_p = torch.ones_like(fake_img2_mk)
+                opp_mask_p = ones_mask_p - fake_img2_mk
+                fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
+                fg_mk.append(fg_masked2)
+                bg_masked2 = torch.mul(fake_img1, opp_mask_p)
+                fake_img2_final = fg_masked2 + bg_masked2  # Parent image
+                fake_imgs.append(fake_img2_final)
+                fg_imgs.append(fake_img2_fg)
+                mk_imgs.append(fake_img2_mk)
+
+                ones_mask_c = torch.ones_like(fake_img3_mk)
+                opp_mask_c = ones_mask_c - fake_img3_mk
+                fg_masked3 = torch.mul(fake_img3_fg, fake_img3_mk)
+                fg_mk.append(fg_masked3)
+                bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
+                fake_img3_final = fg_masked3 + bg_masked3  # Child image
+                fake_imgs.append(fake_img3_final)
+                fg_imgs.append(fake_img3_fg)
+                mk_imgs.append(fake_img3_mk)
+
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk
+
+
+def shift(x_group, shifts: torch.Tensor):
+    x_outs = []
+    for x in x_group:
+        x_outs.append(torch.zeros_like(x, device=x.device))
+
+    N, _, H, W = x_group[0].size()
+
+    for i in range(N):
+        for x_out, x_org in zip(x_outs, x_group):
+            x_out[i, :, max(0, shifts[i][1]):min(H, shifts[i][1] + H), max(0, shifts[i][0]):min(W, shifts[i][0] + W)] = x_org[i,
+                                                                                                                              :, max(0, -shifts[i][1]):min(H, -shifts[i][1] + H), max(0, -shifts[i][0]):min(W, -shifts[i][0] + W)]
+    return x_outs
+
+class RandomShift(LayeredPerturber):
+    def __init__(self, location_noise_fn):
+        self.location_noise_fn = location_noise_fn
+
+    def perturb(self, bg, fg_mask):
+        shifts = torch.round(self.location_noise_fn(
+            (bg.size(0), 2), device=bg.device, resolution=bg.size(2))).long()
+        fg_mask = shift(fg_mask, shifts)
+        return bg, fg_mask
+
+    def perturbs(self):
+        return (False, True)
 
 
 # ############## D networks ################################################

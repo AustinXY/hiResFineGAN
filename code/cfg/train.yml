@@ -15,8 +15,8 @@ TRAIN:
     NET_D: ''  # Specify the discriminator path to resume training
     MAX_EPOCH: 600
     HARDNEG_MAX_ITER: 1500
-    SNAPSHOT_INTERVAL: 1000
-    SAVEMODEL_INTERVAL: 20000
+    SNAPSHOT_INTERVAL: 2000
+    SAVEMODEL_INTERVAL: 100000
     SNAPSHOT_INTERVAL_HARDNEG: 500
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
@@ -25,10 +25,10 @@ TRAIN:
     RECON_WT: 10.
 
     PAD: [30, 26, 21, 10]
-    START_DEPTH: 1 # 32 has depth 0; should match loaded model depth
-    END_DEPTH: 1  # 256 has depth 3
-    BATCHSIZE_PER_DEPTH: [64, 6, 16, 8]
-    BLEND_EPOCHS_PER_DEPTH: [0, 0, 60, 80]
+    START_DEPTH: 2 # 32 has depth 0; should match loaded model depth
+    END_DEPTH: 2  # 256 has depth 3
+    BATCHSIZE_PER_DEPTH: [64, 6, 24, 8]
+    BLEND_EPOCHS_PER_DEPTH: [0, 0, 0, 80]
     STABLE_EPOCHS_PER_DEPTH: [60, 100, 160, 220]
 
 GAN:

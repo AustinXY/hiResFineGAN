@@ -278,30 +278,6 @@ class FineGAN_trainer(object):
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
-        fg_mk = self.mk_imgs[0]
-        bg_mk = torch.ones_like(fg_mk) - fg_mk
-        attn = self.attn
-        eps = 1e-12
-
-        fg_connectivity = self.calc_connectivity(fg_mk, attn[0])
-        fg_avg_conn = fg_connectivity / (torch.sum(fg_mk, dim=(-1, -2)) + eps) # normalize???
-
-        bg_connectivity = self.calc_connectivity(bg_mk, attn[1])
-        bg_avg_conn = bg_connectivity / (torch.sum(bg_mk, dim=(-1, -2)) + eps)
-
-        conn_loss = - (fg_avg_conn * cfg.TRAIN.FG_CONN_WT +
-                       bg_avg_conn * cfg.TRAIN.BG_CONN_WT).mean()
-
-        fg_recon_loss = self.reconstruction_loss(fg_mk, attn[0])
-        bg_recon_loss = self.reconstruction_loss(bg_mk, attn[1])
-        recon_loss = (fg_recon_loss + bg_recon_loss) / \
-            (fg_mk.size(2) * fg_mk.size(3)) * cfg.TRAIN.RECON_WT
-
-        errG_total += conn_loss + recon_loss
-        self.fg_cl = fg_avg_conn.mean()
-        self.bg_cl = bg_avg_conn.mean()
-        self.rl = recon_loss
-
         errG_total.backward()
         for myit in range(3):
             self.optimizerG[myit].step()
@@ -382,13 +358,12 @@ class FineGAN_trainer(object):
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    fake_imgs, fg_imgs, mk_imgs, fg_mk, attn = self.netG(noise, self.c_code, self.alpha)
+                    fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(noise, self.c_code, self.alpha)
 
                     self.fake_imgs = fake_imgs[cur_depth * 3 : cur_depth * 3 + 3]
                     self.fg_imgs = fg_imgs[cur_depth * 2 : cur_depth * 2 + 2]
                     self.mk_imgs = mk_imgs[cur_depth * 2 : cur_depth * 2 + 2]
                     self.fg_mk = fg_mk[cur_depth * 2 : cur_depth * 2 + 2]
-                    self.attn = attn
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
@@ -407,8 +382,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("bg_conn_loss: {}, fg_conn_loss: {}, recon_loss: {}, ave_gamma: {:.4f}".
-                              format(self.bg_cl.item(), self.fg_cl.item(), self.rl.item(), self.netG.module.attn.gamma.mean().item()))
+                        # print("bg_conn_loss: {}, fg_conn_loss: {}, recon_loss: {}, ave_gamma: {:.4f}".
+                        #       format(self.bg_cl.item(), self.fg_cl.item(), self.rl.item(), self.netG.module.attn.gamma.mean().item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -416,7 +391,7 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
                         save_img_results((fake_imgs[cur_depth*3:cur_depth*3+3] + fg_imgs[cur_depth*2:cur_depth*2+2] \
                                             + mk_imgs[cur_depth*2:cur_depth*2+2] + fg_mk[cur_depth*2:cur_depth*2+2]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
@@ -433,35 +408,6 @@ class FineGAN_trainer(object):
                 save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
-
-
-    def calc_connectivity(self, mask, attention):
-        eps = 1e-12
-        ms = mask.size()
-        _attn = attention**2
-        # _mk = mask ** 4
-        pix_connectivity = torch.bmm((mask).view(ms[0], 1, ms[2]*ms[3]), _attn.permute(0, 2, 1))
-        mk_connectivity = torch.bmm(pix_connectivity, (mask**2).view(ms[0], ms[2]*ms[3], 1))
-        return mk_connectivity
-
-    def reconstruction_loss(self, mask, attention):
-        recon_attn = self.recon_attention(mask)
-        return F.mse_loss(attention, recon_attn, reduction='sum')
-
-    def recon_attention(self, mask):
-        eps = 1e-12
-        affinity = self.get_affinity(mask)
-        return affinity / (torch.sum(affinity, keepdim=True, dim=-1) + eps)
-
-    def get_affinity(self, mask):
-        ms = mask.size()
-        # aff1 = mask.view(ms[0],1,ms[2]*ms[3]).repeat(1,ms[2]*ms[3],1)
-        # aff2 = mask.view(ms[0],ms[2]*ms[3],1).repeat(1,1,ms[2]*ms[3])
-        # _aff = torch.abs(aff1 - aff2)
-        # return torch.ones_like(_aff) - _aff
-        _aff = torch.abs(mask.view(ms[0], 1, ms[2]*ms[3]).repeat(
-            1, ms[2]*ms[3], 1) - mask.view(ms[0], ms[2]*ms[3], 1).repeat(1, 1, ms[2]*ms[3]))
-        return torch.ones_like(_aff) - _aff
 
 
     def update_network(self):
