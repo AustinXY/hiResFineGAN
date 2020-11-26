@@ -8,13 +8,13 @@ FINE_GRAINED_CATEGORIES: 200   # For CUB
 TEST_CHILD_CLASS: 125      # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
 TEST_PARENT_CLASS: 0      # specify any value [0, SUPER_CATEGORIES - 1]
 TEST_BACKGROUND_CLASS: 0  # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
-TIED_CODES: True          
+TIED_CODES: False
 
 TRAIN:
     FLAG: False
-    NET_G: '../models/netG/netG_birds.pth'
+    NET_G: '../output/CUB_2020_11_22_07_20_18/Model/netG_98200_depth2.pth'
     BATCH_SIZE: 1
-
+    START_DEPTH: 2
 
 GAN:
     DF_DIM: 64

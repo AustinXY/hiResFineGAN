@@ -1,4 +1,5 @@
 from __future__ import print_function
+from datetime import datetime
 from six.moves import range
 import sys
 import numpy as np
@@ -554,11 +555,8 @@ class FineGAN_trainer(object):
         # self.summary_writer.close()
 
 
-
 class FineGAN_evaluator(object):
-
     def __init__(self):
-
         self.save_dir = os.path.join(cfg.SAVE_DIR, 'images')
         mkdir_p(self.save_dir)
         s_gpus = cfg.GPU_ID.split(',')
@@ -568,8 +566,10 @@ class FineGAN_evaluator(object):
         cudnn.benchmark = True
         self.batch_size = cfg.TRAIN.BATCH_SIZE * self.num_gpus
 
-
     def evaluate_finegan(self):
+        random.seed(datetime.now())
+        depth = cfg.TRAIN.START_DEPTH
+        res = 32 * 2 ** depth
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for model not found!')
         else:
@@ -583,7 +583,8 @@ class FineGAN_evaluator(object):
                 torch.load(cfg.TRAIN.NET_G,
                            map_location=lambda storage, loc: storage)
 
-            state_dict = {k: v for k, v in state_dict.items() if k in model_dict}
+            state_dict = {k: v for k, v in state_dict.items()
+                          if k in model_dict}
 
             model_dict.update(state_dict)
             netG.load_state_dict(model_dict)
@@ -593,8 +594,10 @@ class FineGAN_evaluator(object):
             # print(netG)
 
             nz = cfg.GAN.Z_DIM
-            noise = torch.FloatTensor(self.batch_size, nz)
+            noise = torch.FloatTensor(1, nz)
+
             noise.data.normal_(0, 1)
+            noise = noise.repeat(self.batch_size, 1)
 
             if cfg.CUDA:
                 netG.cuda()
@@ -602,46 +605,173 @@ class FineGAN_evaluator(object):
 
             netG.eval()
 
-            background_class = cfg.TEST_BACKGROUND_CLASS
-            parent_class = cfg.TEST_PARENT_CLASS
-            child_class = cfg.TEST_CHILD_CLASS
-            bg_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            b = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+            p = random.randint(0, cfg.SUPER_CATEGORIES)
+            c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES)
+            bg_code = torch.zeros(
+                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
             p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
-            c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            c_code = torch.zeros(
+                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
 
-            for j in range(self.batch_size):
-                bg_code[j][background_class] = 1
-                p_code[j][parent_class] = 1
-                c_code[j][child_class] = 1
+            nrow = 1
+            bg_li = []
+            pf_li = []
+            cf_li = []
+            pk_li = []
+            ck_li = []
+            pfg_li = []
+            cfg_li = []
+            pfgmk_li = []
+            cfgmk_li = []
+            c_li = np.random.randint(
+                0, cfg.FINE_GRAINED_CATEGORIES-1, size=nrow)
+            for k in range(20):
+                noise.data.normal_(0, 1)
+                b = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+                p = random.randint(0, cfg.SUPER_CATEGORIES-1)
+                c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES)
+                # p = k
+                for i in range(nrow):
+                    bg_code = torch.zeros(
+                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                    p_code = torch.zeros(
+                        [self.batch_size, cfg.SUPER_CATEGORIES])
+                    c_code = torch.zeros(
+                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                    # c = c_li[i]
+                    for j in range(self.batch_size):
+                        bg_code[j][b] = 1
+                        p_code[j][p] = 1
+                        c_code[j][c] = 1
 
-            fake_imgs, fg_imgs, mk_imgs, fgmk_imgs = netG(noise, c_code, p_code, bg_code) # Forward pass through the generator
+                    fake_imgs, fg_imgs, mk_imgs, fgmk_imgs = netG(
+                        noise, c_code, None, p_code, bg_code)  # Forward pass through the generator
+                    bg_li.append(fake_imgs[3 * depth][0])
+                    pf_li.append(fake_imgs[3 * depth + 1][0])
+                    cf_li.append(fake_imgs[3 * depth + 2][0])
+                    pk_li.append(mk_imgs[2 * depth][0])
+                    ck_li.append(mk_imgs[2 * depth + 1][0])
+                    pfg_li.append(fg_imgs[2 * depth][0])
+                    cfg_li.append(fg_imgs[2 * depth + 1][0])
+                    pfgmk_li.append(fgmk_imgs[2 * depth][0])
+                    cfgmk_li.append(fgmk_imgs[2 * depth + 1][0])
 
-            self.save_image(fake_imgs[0][0], self.save_dir, 'background')
-            self.save_image(fake_imgs[1][0], self.save_dir, 'parent_final')
-            self.save_image(fake_imgs[2][0], self.save_dir, 'child_final')
-            self.save_image(fg_imgs[0][0], self.save_dir, 'parent_foreground')
-            self.save_image(fg_imgs[1][0], self.save_dir, 'child_foreground')
-            self.save_image(mk_imgs[0][0], self.save_dir, 'parent_mask')
-            self.save_image(mk_imgs[1][0], self.save_dir, 'child_mask')
-            self.save_image(fgmk_imgs[0][0], self.save_dir, 'parent_foreground_masked')
-            self.save_image(fgmk_imgs[1][0], self.save_dir, 'child_foreground_masked')
+            save_image(bg_li, self.save_dir, 'background', nrow, res)
+            save_image(pf_li, self.save_dir, 'parent_final', nrow, res)
+            save_image(cf_li, self.save_dir, 'child_final', nrow, res)
+            save_image(pfg_li, self.save_dir, 'parent_foreground', nrow, res)
+            save_image(cfg_li, self.save_dir, 'child_foreground', nrow, res)
+            save_image(pk_li, self.save_dir, 'parent_mask', nrow, res)
+            save_image(ck_li, self.save_dir, 'child_mask', nrow, res)
+            save_image(pfgmk_li, self.save_dir,
+                       'parent_foreground_masked', nrow, res)
+            save_image(cfgmk_li, self.save_dir,
+                       'child_foreground_masked', nrow, res)
 
+    def sample_images(self):
+        sample_size = 24
+        save_dir = '../sample_images/'
+        save_final = '../sample_finals/'
+
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        if not os.path.exists(save_final):
+            os.makedirs(save_final)
+
+        random.seed(datetime.now())
+        depth = cfg.TEST_DEPTH
+        res = 32 * 2 ** depth
+        if cfg.TRAIN.NET_G == '':
+            print('Error: the path for model not found!')
+        else:
+            # Build and load the generator
+            netG = G_NET(depth)
+            netG.apply(weights_init)
+            netG = torch.nn.DataParallel(netG, device_ids=self.gpus)
+            model_dict = netG.state_dict()
+
+            state_dict = \
+                torch.load(cfg.TRAIN.NET_G,
+                           map_location=lambda storage, loc: storage)
+
+            state_dict = {k: v for k, v in state_dict.items()
+                          if k in model_dict}
+
+            model_dict.update(state_dict)
+            netG.load_state_dict(model_dict)
+            print('Load ', cfg.TRAIN.NET_G)
+
+            # Uncomment this to print Generator layers
+            # print(netG)
+
+            nz = cfg.GAN.Z_DIM
+            noise = torch.FloatTensor(1, nz)
+            # noise.data.normal_(0, 1)
+            # noise = noise.repeat(1, 1)
+
+            if cfg.CUDA:
+                netG.cuda()
+                noise = noise.cuda()
+
+            netG.eval()
+
+            for i in tqdm(range(sample_size)):
+                noise.data.normal_(0, 1)
+                bg_code = torch.zeros([1, cfg.FINE_GRAINED_CATEGORIES]).cuda()
+                p_code = torch.zeros([1, cfg.SUPER_CATEGORIES]).cuda()
+                c_code = torch.zeros([1, cfg.FINE_GRAINED_CATEGORIES]).cuda()
+                b = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+                p = random.randint(0, cfg.SUPER_CATEGORIES-1)
+                c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+                bg_code[0][b] = 1
+                p_code[0][p] = 1
+                c_code[0][c] = 1
+
+                fake_imgs, fg_imgs, mk_imgs, fgmk_imgs = netG(
+                    noise, c_code, 1, p_code, bg_code)  # Forward pass through the generator
+
+                self.save_image(fake_imgs[3 * depth + 0]
+                                [0], save_dir, '%d_bg' % i)
+                self.save_image(fake_imgs[3 * depth + 1]
+                                [0], save_dir, '%d_pf' % i)
+                self.save_image(fake_imgs[3 * depth + 2]
+                                [0], save_dir, '%d_cf' % i)
+                self.save_image(fake_imgs[3 * depth + 2]
+                                [0], save_final, '%d' % i)
+                # self.save_image(fg_imgs[2 * depth + 0][0], save_dir, 'parent_foreground')
+                # self.save_image(fg_imgs[2 * depth + 1][0], save_dir, 'child_foreground')
+                self.save_image(mk_imgs[2 * depth + 0]
+                                [0], save_dir, '%d_pmk' % i)
+                self.save_image(mk_imgs[2 * depth + 1]
+                                [0], save_dir, '%d_cmk' % i)
+                # sys.exit(0)
+                # self.save_image(fgmk_imgs[2 * depth + 0][0], save_dir, 'parent_foreground_masked')
+                # self.save_image(fgmk_imgs[2 * depth + 1][0], save_dir, 'child_foreground_masked')
 
     def save_image(self, images, save_dir, iname):
-
         img_name = '%s.png' % (iname)
         full_path = os.path.join(save_dir, img_name)
+        vutils.save_image(images, '%s/%s' %
+                          (save_dir, img_name), normalize=True)
 
-        if (iname.find('mask') == -1) or (iname.find('foreground') != -1):
-            img = images.add(1).div(2).mul(255).clamp(0, 255).byte()
-            ndarr = img.permute(1, 2, 0).data.cpu().numpy()
-            im = Image.fromarray(ndarr)
-            im.save(full_path)
+        # if (iname.find('mk') == -1) or (iname.find('foreground') != -1):
+        #     img = images.add(1).div(2).mul(255).clamp(0, 255).byte()
+        #     ndarr = img.permute(1, 2, 0).data.cpu().numpy()
+        #     im = Image.fromarray(ndarr)
+        #     im.save(full_path)
 
-        else:
-            img = images.mul(255).clamp(0, 255).byte()
-            ndarr = img.data.cpu().numpy()
-            ndarr = np.reshape(ndarr, (ndarr.shape[-1], ndarr.shape[-1], 1))
-            ndarr = np.repeat(ndarr, 3, axis=2)
-            im = Image.fromarray(ndarr)
-            im.save(full_path)
+        # else:
+        #     img = images.mul(255).clamp(0, 255).byte()
+        #     ndarr = img.data.cpu().numpy()
+        #     ndarr = np.reshape(ndarr, (ndarr.shape[-1], ndarr.shape[-1], 1))
+        #     ndarr = np.repeat(ndarr, 3, axis=2)
+        #     im = Image.fromarray(ndarr)
+        #     im.save(full_path)
+
+
+def save_image(fake_imgs, image_dir, iname, nrow, res):
+    img_name = '%s%d.png' % (iname, res)
+    vutils.save_image(fake_imgs, '%s/%s' %
+                      (image_dir, img_name), nrow=nrow, normalize=True)
