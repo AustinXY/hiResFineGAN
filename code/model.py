@@ -341,6 +341,7 @@ class G_NET(nn.Module):
 
         self.gf_dim = ngf
         self.cur_depth = start_depth
+        self.recon_net = RECON_NET()
 
     def inc_depth(self):
         # oneline apply should work??
@@ -393,8 +394,8 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            if i == self.cur_depth:
-                h_code_bg, bg_attn = self.attn(h_code_bg)
+            # if i == self.cur_depth:
+            #     h_code_bg, bg_attn = self.attn(h_code_bg)
 
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -402,7 +403,6 @@ class G_NET(nn.Module):
                 prev_fake_img1 = F.upsample(
                     prev_fake_img1, scale_factor=2)  # mode='nearest'
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
-            fake_imgs.append(fake_img1)
 
             h_code_p = _p_code_net(h_code_p, p_code)
             if i == self.cur_depth:
@@ -422,16 +422,6 @@ class G_NET(nn.Module):
                 fake_img2_mk = (1 - alpha) * \
                     prev_fake_img2_mk + alpha * fake_img2_mk
 
-            ones_mask_p = torch.ones_like(fake_img2_mk)
-            opp_mask_p = ones_mask_p - fake_img2_mk
-            fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
-            fg_mk.append(fg_masked2)
-            bg_masked2 = torch.mul(fake_img1, opp_mask_p)
-            fake_img2_final = fg_masked2 + bg_masked2  # Parent image
-            fake_imgs.append(fake_img2_final)
-            fg_imgs.append(fake_img2_fg)
-            mk_imgs.append(fake_img2_mk)
-
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
@@ -447,18 +437,36 @@ class G_NET(nn.Module):
                 fake_img3_mk = (1 - alpha) * \
                     prev_fake_img3_mk + alpha * fake_img3_mk
 
-            ones_mask_c = torch.ones_like(fake_img3_mk)
-            opp_mask_c = ones_mask_c - fake_img3_mk
-            fg_masked3 = torch.mul(fake_img3_fg, fake_img3_mk)
-            fg_mk.append(fg_masked3)
-            bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
-            fake_img3_final = fg_masked3 + bg_masked3  # Child image
-            fake_imgs.append(fake_img3_final)
-            fg_imgs.append(fake_img3_fg)
-            mk_imgs.append(fake_img3_mk)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [fg_attn, bg_attn]
+            if i == self.cur_depth:
+                fake_imgs.append(fake_img1)
+                ones_mask_p = torch.ones_like(fake_img2_mk)
+                opp_mask_p = ones_mask_p - fake_img2_mk
+                fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
+                fg_mk.append(fg_masked2)
+                bg_masked2 = torch.mul(fake_img1, opp_mask_p)
+                fake_img2_final = fg_masked2 + bg_masked2  # Parent image
+                fake_imgs.append(fake_img2_final)
+                fg_imgs.append(fake_img2_fg)
+                mk_imgs.append(fake_img2_mk)
+                ones_mask_c = torch.ones_like(fake_img3_mk)
+                opp_mask_c = ones_mask_c - fake_img3_mk
+                fg_masked3 = torch.mul(fake_img3_fg, fake_img3_mk)
+                fg_mk.append(fg_masked3)
+                bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
+                fake_img3_final = fg_masked3 + bg_masked3  # Child image
+                fake_imgs.append(fake_img3_final)
+                fg_imgs.append(fake_img3_fg)
+                mk_imgs.append(fake_img3_mk)
 
+                recon_info = recon_mask_info(fg_attn, fake_img2_mk)
+                recon_mask = self.recon_net(recon_info)
+
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, recon_mask
+
+def recon_mask_info(fg_attn, fg_mk):
+    ms = fg_mk.size()
+    return torch.bmm(fg_mk.view(ms[0], 1, ms[2]*ms[3]), fg_attn**2).view(ms)
 
 # ############## D networks ################################################
 def Block3x3_leakRelu(in_planes, out_planes):
@@ -534,71 +542,46 @@ def fromRGB_layer(out_planes):
     return layer
 
 
-class D_NET_BG_BASE(nn.Module):
-    def __init__(self, ndf):
+def fromGRAY_layer(out_planes):
+    layer = nn.Sequential(
+        nn.Conv2d(1, out_planes, 1, 1, 0, bias=False),
+        nn.LeakyReLU(0.2, inplace=True)
+    )
+    return layer
+
+
+class RECON_NET(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.df_dim = ndf
+        self.df_dim = 64
         self.define_module()
 
     def define_module(self):
         ndf = self.df_dim
-        self.conv = MnetConv(ndf, ndf * 2, 3, 1, 1)
-        self.conv_uncond_logits1 = MnetConv(ndf * 2, 1, 3, 1, 1)
-        self.conv_uncond_logits2 = MnetConv(ndf * 2, 1, 3, 1, 1)
+        self.from_gray = fromGRAY_layer(ndf)
+        self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
+        self.sameblock1 = sameBlock(ndf * 2, ndf * 2)
+        self.downblock2 = downBlock(ndf * 2, ndf * 4, 3, 1, 1)
+        self.sameblock2 = sameBlock(ndf * 4, ndf * 4)
 
-    def forward(self, x_code, mask):
-        x_code, mask = self.conv(x_code, mask)
-        x_code = F.leaky_relu(x_code, 0.2, inplace=True)
-        _x_code, _mask = self.conv_uncond_logits1(x_code, mask)
-        classi_score = F.sigmoid(_x_code)
-        _x_code, _mask = self.conv_uncond_logits2(x_code, mask)
-        rf_score = F.sigmoid(_x_code)
-        return [classi_score, rf_score], _mask
+        self.upblock1 = upBlock(ndf * 4, ndf * 2)
+        self.sameblock3 = sameBlock(ndf * 2, ndf * 2)
+        self.upblock2 = upBlock(ndf * 2, ndf)
+        self.sameblock4 = sameBlock(ndf, ndf)
+        self.to_gray = TO_GRAY_LAYER(ndf)
 
-
-class D_NET_BG(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.df_dim = 256
-        # self.define_module()
-        self.temp = nn.Conv2d(1,1,1)
-
-    def define_module(self):
-        ndf = self.df_dim
-        self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
-        self.down_net = nn.ModuleList([D_NET_BG_BASE(ndf)])
-        ndf = ndf // 2
-        for _ in range(start_depth):
-            self.from_RGB_net.append(fromRGB_layer(ndf))
-            self.down_net.append(downBlock_mnet(ndf, ndf * 2, 3, 1, 1))
-            ndf = ndf // 2
-
-        self.df_dim = ndf
-        self.cur_depth = start_depth
-
-    def inc_depth(self):
-        ndf = self.df_dim
-        self.from_RGB_net.append(fromRGB_layer(ndf).apply(weights_init))
-        self.down_net.append(downBlock_mnet(
-            ndf, ndf * 2, 3, 1, 1).apply(weights_init))
-        ndf = ndf // 2
-        self.df_dim = ndf
-        self.cur_depth = self.cur_depth + 1
-
-    def forward(self, x_var, alpha=None, mask=None):
-        return [torch.ones(x_var.size(0), 1), torch.ones(x_var.size(0), 1), None]
-
-        x_code = self.from_RGB_net[self.cur_depth](x_var)
-        for i in range(self.cur_depth, -1, -1):
-            x_code, mask = self.down_net[i](x_code, mask)
-            if i == self.cur_depth and i != start_depth and alpha < 1:
-                y_var = F.avg_pool2d(x_var, 2)
-                y_code = self.from_RGB_net[i-1](y_var)
-                x_code = (1 - alpha) * y_code + alpha * x_code
-
-        classi_score = x_code[0]
-        rf_score = x_code[1]
-        return [classi_score, rf_score, mask]
+    def forward(self, mask_info):
+        recon_mask = self.from_gray(mask_info)
+        recon_mask = self.downblock1(recon_mask)
+        recon_mask = self.sameblock1(recon_mask)
+        recon_mask = self.downblock2(recon_mask)
+        recon_mask = self.sameblock2(recon_mask)
+        recon_mask = self.upblock1(recon_mask)
+        recon_mask = self.sameblock3(recon_mask)
+        recon_mask = self.upblock2(recon_mask)
+        recon_mask = self.sameblock4(recon_mask)
+        recon_mask = self.to_gray(recon_mask)
+        return recon_mask
 
 
 class D_NET_PC_BASE(nn.Module):
