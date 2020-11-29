@@ -294,7 +294,7 @@ class Self_Attn(nn.Module):
 
         out = self.gamma*out + x
         return out, attention
-
+        # return attention
 
 class G_NET(nn.Module):
     def __init__(self):
@@ -367,7 +367,7 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
+    def forward(self, z_code, c_code, alpha=None, beta=0, p_code=None, bg_code=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
@@ -425,6 +425,8 @@ class G_NET(nn.Module):
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
+            fake_img3_mk = fake_img2_mk * fake_img3_mk
+            # fake_img3_mk = (1 - 1) * fake_img3_mk + 1 * (fake_img2_mk * fake_img3_mk)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
                 prev_fake_img3_fg = F.upsample(
@@ -466,7 +468,7 @@ class G_NET(nn.Module):
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()
-    return torch.bmm(fg_mk.view(ms[0], 1, ms[2]*ms[3]), fg_attn**2).view(ms)
+    return torch.bmm(fg_mk.view(ms[0], 1, ms[2]*ms[3]), fg_attn).view(ms)
 
 # ############## D networks ################################################
 def Block3x3_leakRelu(in_planes, out_planes):

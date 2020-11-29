@@ -279,18 +279,35 @@ class FineGAN_trainer(object):
                   self.summary_writer.add_summary(summary_D, count)
 
         fg_mk = self.mk_imgs[0]
-        recon_loss = F.mse_loss(self.recon_mk, fg_mk)
+        bg_mk = torch.ones_like(fg_mk) - fg_mk
+        ch_mk = self.mk_imgs[1]
+        min_bg_cvg = 0.1 * 4096
+        recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 1e2
+        binary_loss = self.binarization_loss(fg_mk) * 1e2
+        conc_loss = self.concentration_loss(fg_mk) * 0
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 50 # child mask out of bound
+        # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean()
 
-        binary_loss = self.binarization_loss(fg_mk)
-
-        errG_total += recon_loss + binary_loss
+        errG_total += recon_loss + binary_loss + conc_loss #oob_loss + bg_cvg_loss # + binary_loss
         self.rl = recon_loss
         self.bl = binary_loss
+        self.cl = conc_loss
 
         errG_total.backward()
         for myit in range(3):
             self.optimizerG[myit].step()
         return errG_total
+
+    def concentration_loss(self, mask):
+        eps = 1e-12
+        mass = torch.sum(mask, dim=(-1, -2)) + eps
+        center_x = torch.sum(mask * self.xc, dim=(-1,-2)) / mass
+        center_y = torch.sum(mask * self.yc, dim=(-1,-2)) / mass
+        center_x = center_x.unsqueeze(2).unsqueeze(3)
+        center_y = center_y.unsqueeze(2).unsqueeze(3)
+        dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
+            (self.yc - center_y * torch.ones_like(self.yc))**2
+        return (torch.sum(dist * mask, dim=(-1,-2)) / mass).mean()
 
     def get_dataloader(self, cur_depth):
         bshuffle = True
@@ -305,9 +322,14 @@ class FineGAN_trainer(object):
                           transform=image_transform)
         assert dataset
         num_gpu = len(cfg.GPU_ID.split(','))
+        bs = batchsize_per_depth[cur_depth]
         dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batchsize_per_depth[cur_depth] * num_gpu,
+            dataset, batch_size= bs * num_gpu,
             drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
+
+        xc, yc = torch.meshgrid([torch.arange(64), torch.arange(64)])
+        self.xc = xc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
+        self.yc = yc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         return dataloader
 
     def train(self):
@@ -349,6 +371,7 @@ class FineGAN_trainer(object):
 
             start_epoch = start_count // (num_batches)
             start_count = 0
+            self.beta = 0
 
             for epoch in range(start_epoch, max_epoch):
                 depth_ep_ctr += 1
@@ -361,13 +384,21 @@ class FineGAN_trainer(object):
 
                 start_t = time.time()
                 for step, data in enumerate(dataloader, 0):
+
+                    # _travel = 5000.0
+                    # if count < _travel:
+                    #     self.beta = count / _travel
+                    # else:
+                    #     self.beta = 1
+                    self.beta = 1
+
                     count += 1
                     _, self.real_fimgs, self.real_cimgs, \
                         self.c_code, self.masks = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.recon_mk = self.netG(noise, self.c_code, self.alpha)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.recon_mk = self.netG(noise, self.c_code, self.alpha, self.beta)
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
@@ -386,8 +417,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("recon_loss: {}, bin_loss: {}, ave_gamma: {:.4f}".
-                              format(self.rl.item(), self.bl.item(), self.netG.module.attn.gamma.mean().item()))
+                        print("recon_loss: {}, binary_loss: {}, conc_loss: {}, ave_gamma: {:.4f}".
+                              format(self.rl.item(), self.bl.item(), self.cl.item(), self.netG.module.attn.gamma.mean().item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
