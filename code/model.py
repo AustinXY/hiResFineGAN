@@ -394,8 +394,8 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            # if i == self.cur_depth:
-            #     h_code_bg, bg_attn = self.attn(h_code_bg)
+            if i == self.cur_depth:
+                h_code_bg, bg_attn = self.attn(h_code_bg)
 
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -425,7 +425,7 @@ class G_NET(nn.Module):
             h_code_c = _c_code_net(h_code_p, c_code)
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
-            fake_img3_mk = fake_img2_mk * fake_img3_mk
+            # fake_img3_mk = fake_img2_mk * fake_img3_mk
             # fake_img3_mk = (1 - 1) * fake_img3_mk + 1 * (fake_img2_mk * fake_img3_mk)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
@@ -461,7 +461,7 @@ class G_NET(nn.Module):
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
 
-                recon_info = recon_mask_info(fg_attn, fake_img2_mk)
+                recon_info = recon_mask_info(fg_attn+bg_attn, fake_img2_mk)
                 recon_mask = self.recon_net(recon_info)
 
         return fake_imgs, fg_imgs, mk_imgs, fg_mk, recon_mask

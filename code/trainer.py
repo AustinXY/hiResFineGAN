@@ -282,8 +282,8 @@ class FineGAN_trainer(object):
         bg_mk = torch.ones_like(fg_mk) - fg_mk
         ch_mk = self.mk_imgs[1]
         min_bg_cvg = 0.1 * 4096
-        recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 1e2
-        binary_loss = self.binarization_loss(fg_mk) * 1e2
+        recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
+        binary_loss = self.binarization_loss(fg_mk) * 100
         conc_loss = self.concentration_loss(fg_mk) * 0
         # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 50 # child mask out of bound
         # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean()
