@@ -261,9 +261,9 @@ class Self_Attn(nn.Module):
         self.activation = activation
 
         self.query_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//4, kernel_size=1)
+            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
         self.key_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//4, kernel_size=1)
+            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
         self.value_conv = nn.Conv2d(
             in_channels=in_dim, out_channels=in_dim, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
@@ -311,7 +311,7 @@ class G_NET(nn.Module):
 
         self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
         self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
-        self.attn = Self_Attn(ngf // 2, 'relu')
+        # self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
@@ -328,7 +328,7 @@ class G_NET(nn.Module):
             self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
 
             self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
-            self.attn = Self_Attn(ngf // 2, 'relu')
+            # self.attn = Self_Attn(ngf // 2, 'relu')
 
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
@@ -353,7 +353,7 @@ class G_NET(nn.Module):
 
         self.p_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=1).apply(weights_init))
-        self.attn = Self_Attn(ngf // 2, 'relu')
+        # self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
@@ -394,8 +394,8 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            if i == self.cur_depth:
-                h_code_bg, bg_attn = self.attn(h_code_bg)
+            # if i == self.cur_depth:
+            #     h_code_bg, bg_attn = self.attn(h_code_bg)
 
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -405,8 +405,8 @@ class G_NET(nn.Module):
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
 
             h_code_p = _p_code_net(h_code_p, p_code)
-            if i == self.cur_depth:
-                h_code_p, fg_attn = self.attn(h_code_p)
+            # if i == self.cur_depth:
+            #     h_code_p, fg_attn = self.attn(h_code_p)
 
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
@@ -423,6 +423,7 @@ class G_NET(nn.Module):
                     prev_fake_img2_mk + alpha * fake_img2_mk
 
             h_code_c = _c_code_net(h_code_p, c_code)
+
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
             # fake_img3_mk = fake_img2_mk * fake_img3_mk
@@ -438,7 +439,6 @@ class G_NET(nn.Module):
                     prev_fake_img3_mk, scale_factor=2)  # mode='nearest'
                 fake_img3_mk = (1 - alpha) * \
                     prev_fake_img3_mk + alpha * fake_img3_mk
-
 
             if i == self.cur_depth:
                 fake_imgs.append(fake_img1)
@@ -461,10 +461,10 @@ class G_NET(nn.Module):
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
 
-                recon_info = recon_mask_info(fg_attn+bg_attn, fake_img2_mk)
-                recon_mask = self.recon_net(recon_info)
+                # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
+                # recon_mask = self.recon_net(recon_info)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, recon_mask
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, None
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()

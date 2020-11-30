@@ -252,9 +252,8 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
 
         for i in range(1, self.num_Ds):
-            outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
-
             if i == 2:  # real/fake loss for background (0) and child (2) stage
+                outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
                 real_labels = torch.ones_like(outputs[1])
                 errG = criterion_one(outputs[1], real_labels)
                 errG_total = errG_total + errG
@@ -281,33 +280,39 @@ class FineGAN_trainer(object):
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
         ch_mk = self.mk_imgs[1]
-        min_bg_cvg = 0.1 * 4096
-        recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
-        binary_loss = self.binarization_loss(fg_mk) * 100
-        conc_loss = self.concentration_loss(fg_mk) * 0
-        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 50 # child mask out of bound
+        # min_bg_cvg = 0.1 * 4096
+        # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
+        binary_loss = self.binarization_loss(fg_mk) * 1
+        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 1e-2
+        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-1 # child mask out of bound
         # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean()
 
-        errG_total += recon_loss + binary_loss + conc_loss #oob_loss + bg_cvg_loss # + binary_loss
-        self.rl = recon_loss
-        self.bl = binary_loss
+        errG_total += binary_loss + oob_loss + conc_loss
+
         self.cl = conc_loss
+        self.bl = binary_loss
+        self.ol = oob_loss
 
         errG_total.backward()
         for myit in range(3):
             self.optimizerG[myit].step()
         return errG_total
 
-    def concentration_loss(self, mask):
+    def concentration_loss(self, fg_mk, bg_mk):
         eps = 1e-12
-        mass = torch.sum(mask, dim=(-1, -2)) + eps
-        center_x = torch.sum(mask * self.xc, dim=(-1,-2)) / mass
-        center_y = torch.sum(mask * self.yc, dim=(-1,-2)) / mass
+        fg_mass = torch.sum(fg_mk, dim=(-1, -2)) + eps
+        bg_mass = torch.sum(bg_mk, dim=(-1, -2)) + eps
+        center_x = torch.sum(fg_mk * self.xc, dim=(-1,-2)) / fg_mass
+        center_y = torch.sum(fg_mk * self.yc, dim=(-1,-2)) / fg_mass
         center_x = center_x.unsqueeze(2).unsqueeze(3)
         center_y = center_y.unsqueeze(2).unsqueeze(3)
-        dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
+        fg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
             (self.yc - center_y * torch.ones_like(self.yc))**2
-        return (torch.sum(dist * mask, dim=(-1,-2)) / mass).mean()
+        bg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
+            (self.yc - center_y * torch.ones_like(self.yc))**2
+        fg_var = torch.sum(fg_dist * fg_mk, dim=(-1, -2)) / fg_mass
+        bg_var = torch.sum(bg_dist * bg_mk, dim=(-1, -2)) / bg_mass
+        return F.relu(fg_var - bg_var).mean()
 
     def get_dataloader(self, cur_depth):
         bshuffle = True
@@ -417,8 +422,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("recon_loss: {}, binary_loss: {}, conc_loss: {}, ave_gamma: {:.4f}".
-                              format(self.rl.item(), self.bl.item(), self.cl.item(), self.netG.module.attn.gamma.mean().item()))
+                        print("binary_loss: {}, oob_loss: {}, conc_loss: {}".
+                              format(self.bl.item(), self.ol.item(), self.cl.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -426,8 +431,8 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk, recon_mk = self.netG(fixed_noise, self.c_code, self.alpha)
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [recon_mk]),
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
+                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
