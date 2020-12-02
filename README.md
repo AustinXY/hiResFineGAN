@@ -4,5 +4,6 @@ binary
 3. dynamic c -> b code mapping
 4. rand no tie b
 5. rand no tie z
-6. rand flip
+6. rand flip <br>
+<br>
 todo: modify image preprocess function
