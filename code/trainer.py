@@ -283,7 +283,7 @@ class FineGAN_trainer(object):
         # min_bg_cvg = 0.1 * 4096
         # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
         binary_loss = self.binarization_loss(fg_mk) * 1
-        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 1e-2
+        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
         oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-1 # child mask out of bound
         # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean()
 
@@ -299,17 +299,23 @@ class FineGAN_trainer(object):
         return errG_total
 
     def concentration_loss(self, fg_mk, bg_mk):
+        ms = fg_mk.size()
         eps = 1e-12
         fg_mass = torch.sum(fg_mk, dim=(-1, -2)) + eps
         bg_mass = torch.sum(bg_mk, dim=(-1, -2)) + eps
-        center_x = torch.sum(fg_mk * self.xc, dim=(-1,-2)) / fg_mass
-        center_y = torch.sum(fg_mk * self.yc, dim=(-1,-2)) / fg_mass
-        center_x = center_x.unsqueeze(2).unsqueeze(3)
-        center_y = center_y.unsqueeze(2).unsqueeze(3)
-        fg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
-            (self.yc - center_y * torch.ones_like(self.yc))**2
-        bg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
-            (self.yc - center_y * torch.ones_like(self.yc))**2
+        # center_x = torch.sum(fg_mk * self.xc, dim=(-1,-2)) / fg_mass
+        # center_y = torch.sum(fg_mk * self.yc, dim=(-1,-2)) / fg_mass
+        # center_x = center_x.unsqueeze(2).unsqueeze(3)
+        # center_y = center_y.unsqueeze(2).unsqueeze(3)
+        # fg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
+        #     (self.yc - center_y * torch.ones_like(self.yc))**2
+        # bg_dist = (self.xc - center_x * torch.ones_like(self.xc))**2 + \
+        #     (self.yc - center_y * torch.ones_like(self.yc))**2
+
+        center_x = (ms[2] / 2) * torch.ones_like(self.xc)
+        center_y = (ms[3] / 2) * torch.ones_like(self.yc)
+        fg_dist = (self.xc - center_x)**2 + (self.yc - center_y)**2
+        bg_dist = (self.xc - center_x)**2 + (self.yc - center_y)**2
         fg_var = torch.sum(fg_dist * fg_mk, dim=(-1, -2)) / fg_mass
         bg_var = torch.sum(bg_dist * bg_mk, dim=(-1, -2)) / bg_mass
         return F.relu(fg_var - bg_var).mean()
@@ -332,7 +338,8 @@ class FineGAN_trainer(object):
             dataset, batch_size= bs * num_gpu,
             drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
 
-        xc, yc = torch.meshgrid([torch.arange(64), torch.arange(64)])
+        imsize = 32 * (2 ** cur_depth)
+        xc, yc = torch.meshgrid([torch.arange(imsize), torch.arange(imsize)])
         self.xc = xc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         self.yc = yc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         return dataloader

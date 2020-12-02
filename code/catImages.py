@@ -2,8 +2,8 @@ from PIL import Image
 import os
 
 
-count = 62000
-train_dir = 'birds_2020_08_11_07_14_01'
+count = 78000
+train_dir = 'CUB_2020_11_30_16_10_42'
 
 
 def get_concat_v(im1, im2):
@@ -25,7 +25,7 @@ for im_path in os.listdir('../output/%s/Image/' % train_dir):
         # istart = im_path.rfind('res') + 3
         # iend = im_path.rfind('.png')
         # res = im_path[istart:iend]
-        depth = 1
+        depth = 2
         break
 
 
