@@ -367,7 +367,7 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, beta=0, p_code=None, bg_code=None):
+    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]

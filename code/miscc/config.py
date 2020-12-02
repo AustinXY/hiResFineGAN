@@ -34,7 +34,7 @@ __C.TEST = edict()
 
 # Training options
 __C.TRAIN = edict()
-# __C.TRAIN.BATCH_SIZE = 64
+__C.TRAIN.BATCH_SIZE = 64
 # __C.TRAIN.BG_LOSS_WT = 10
 __C.TRAIN.VIS_COUNT = 64
 __C.TRAIN.MAX_EPOCH = 600

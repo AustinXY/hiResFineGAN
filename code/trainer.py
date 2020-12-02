@@ -25,6 +25,8 @@ from miscc.utils import mkdir_p
 
 from datasets import Dataset
 import torchvision.transforms as transforms
+from datetime import datetime
+
 
 from model import G_NET, D_NET_PC
 
@@ -148,10 +150,10 @@ def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
     torch.save(
         netG.state_dict(),
         '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
-    # for i in range(1, len(netsD)):
-    #     netD = netsD[i]
-    #     torch.save(netD.state_dict(),
-    #         '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
+    for i in range(1, len(netsD)):
+        netD = netsD[i]
+        torch.save(netD.state_dict(),
+            '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
     print('Save G/Ds models.')
 
 
@@ -280,18 +282,20 @@ class FineGAN_trainer(object):
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
         ch_mk = self.mk_imgs[1]
-        # min_bg_cvg = 0.1 * 4096
+        ms = fg_mk.size()
+        min_fg_cvg = 0.3 * ms[2] * ms[3]
         # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
-        binary_loss = self.binarization_loss(fg_mk) * 1
-        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 1e-2
-        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-1 # child mask out of bound
-        # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean()
+        binary_loss = self.binarization_loss(fg_mk) * 20
+        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
+        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
+        fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
 
-        errG_total += binary_loss + oob_loss + conc_loss
+        errG_total += binary_loss + oob_loss + conc_loss + fg_cvg_loss
 
-        self.cl = conc_loss
+        self.cl = fg_cvg_loss
         self.bl = binary_loss
         self.ol = oob_loss
+        # self.fl = fg_cvg_loss
 
         errG_total.backward()
         for myit in range(3):
@@ -332,7 +336,8 @@ class FineGAN_trainer(object):
             dataset, batch_size= bs * num_gpu,
             drop_last=True, shuffle=bshuffle, num_workers=int(cfg.WORKERS))
 
-        xc, yc = torch.meshgrid([torch.arange(64), torch.arange(64)])
+        imsize = 32 * (2 ** cur_depth)
+        xc, yc = torch.meshgrid([torch.arange(imsize), torch.arange(imsize)])
         self.xc = xc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         self.yc = yc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         return dataloader
@@ -422,7 +427,7 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, oob_loss: {}, conc_loss: {}".
+                        print("binary_loss: {}, oob_loss: {}, cvg_loss: {}".
                               format(self.bl.item(), self.ol.item(), self.cl.item()))
 
                         backup_para = copy_G_params(self.netG)
@@ -597,7 +602,6 @@ class FineGAN_trainer(object):
         # self.summary_writer.close()
 
 
-
 class FineGAN_evaluator(object):
 
     def __init__(self):
@@ -611,13 +615,16 @@ class FineGAN_evaluator(object):
         cudnn.benchmark = True
         self.batch_size = cfg.TRAIN.BATCH_SIZE * self.num_gpus
 
-
     def evaluate_finegan(self):
+        random.seed(datetime.now())
+        depth = cfg.TRAIN.START_DEPTH
+        res = 32 * 2 ** depth
         if cfg.TRAIN.NET_G == '':
             print('Error: the path for model not found!')
         else:
             # Build and load the generator
             netG = G_NET()
+            # print(netG)
             netG.apply(weights_init)
             netG = torch.nn.DataParallel(netG, device_ids=self.gpus)
             model_dict = netG.state_dict()
@@ -626,7 +633,8 @@ class FineGAN_evaluator(object):
                 torch.load(cfg.TRAIN.NET_G,
                            map_location=lambda storage, loc: storage)
 
-            state_dict = {k: v for k, v in state_dict.items() if k in model_dict}
+            state_dict = {k: v for k, v in state_dict.items()
+                          if k in model_dict}
 
             model_dict.update(state_dict)
             netG.load_state_dict(model_dict)
@@ -636,8 +644,10 @@ class FineGAN_evaluator(object):
             # print(netG)
 
             nz = cfg.GAN.Z_DIM
-            noise = torch.FloatTensor(self.batch_size, nz)
+            noise = torch.FloatTensor(1, nz)
+
             noise.data.normal_(0, 1)
+            noise = noise.repeat(self.batch_size, 1)
 
             if cfg.CUDA:
                 netG.cuda()
@@ -645,30 +655,67 @@ class FineGAN_evaluator(object):
 
             netG.eval()
 
-            background_class = cfg.TEST_BACKGROUND_CLASS
-            parent_class = cfg.TEST_PARENT_CLASS
-            child_class = cfg.TEST_CHILD_CLASS
-            bg_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            b = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+            p = random.randint(0, cfg.SUPER_CATEGORIES-1)
+            c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+            bg_code = torch.zeros(
+                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
             p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
-            c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            c_code = torch.zeros(
+                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
 
-            for j in range(self.batch_size):
-                bg_code[j][background_class] = 1
-                p_code[j][parent_class] = 1
-                c_code[j][child_class] = 1
+            nrow = 1
+            bg_li = []
+            pf_li = []
+            cf_li = []
+            pk_li = []
+            ck_li = []
+            pfg_li = []
+            cfg_li = []
+            pfgmk_li = []
+            cfgmk_li = []
+            c_li = np.random.randint(
+                0, cfg.FINE_GRAINED_CATEGORIES-1, size=nrow)
+            for k in range(10):
+                p = random.randint(0, cfg.SUPER_CATEGORIES-1)
 
-            fake_imgs, fg_imgs, mk_imgs, fgmk_imgs = netG(noise, c_code, p_code, bg_code) # Forward pass through the generator
+                for i in range(nrow):
+                    bg_code = torch.zeros(
+                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                    p_code = torch.zeros(
+                        [self.batch_size, cfg.SUPER_CATEGORIES])
+                    c_code = torch.zeros(
+                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                    c = c_li[i]
+                    # c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+                    for j in range(self.batch_size):
+                        bg_code[j][b] = 1
+                        p_code[j][p] = 1
+                        c_code[j][c] = 1
 
-            self.save_image(fake_imgs[0][0], self.save_dir, 'background')
-            self.save_image(fake_imgs[1][0], self.save_dir, 'parent_final')
-            self.save_image(fake_imgs[2][0], self.save_dir, 'child_final')
-            self.save_image(fg_imgs[0][0], self.save_dir, 'parent_foreground')
-            self.save_image(fg_imgs[1][0], self.save_dir, 'child_foreground')
-            self.save_image(mk_imgs[0][0], self.save_dir, 'parent_mask')
-            self.save_image(mk_imgs[1][0], self.save_dir, 'child_mask')
-            self.save_image(fgmk_imgs[0][0], self.save_dir, 'parent_foreground_masked')
-            self.save_image(fgmk_imgs[1][0], self.save_dir, 'child_foreground_masked')
+                    fake_imgs, fg_imgs, mk_imgs, fgmk_imgs, _ = netG(
+                        noise, c_code, None, p_code, bg_code)  # Forward pass through the generator
+                    bg_li.append(fake_imgs[0][0])
+                    pf_li.append(fake_imgs[1][0])
+                    cf_li.append(fake_imgs[2][0])
+                    pk_li.append(mk_imgs[0][0])
+                    ck_li.append(mk_imgs[1][0])
+                    pfg_li.append(fg_imgs[0][0])
+                    cfg_li.append(fg_imgs[1][0])
+                    pfgmk_li.append(fgmk_imgs[0][0])
+                    cfgmk_li.append(fgmk_imgs[1][0])
 
+            save_image(bg_li, self.save_dir, 'background', nrow, res)
+            save_image(pf_li, self.save_dir, 'parent_final', nrow, res)
+            save_image(cf_li, self.save_dir, 'child_final', nrow, res)
+            save_image(pfg_li, self.save_dir, 'parent_foreground', nrow, res)
+            save_image(cfg_li, self.save_dir, 'child_foreground', nrow, res)
+            save_image(pk_li, self.save_dir, 'parent_mask', nrow, res)
+            save_image(ck_li, self.save_dir, 'child_mask', nrow, res)
+            save_image(pfgmk_li, self.save_dir,
+                       'parent_foreground_masked', nrow, res)
+            save_image(cfgmk_li, self.save_dir,
+                       'child_foreground_masked', nrow, res)
 
     def save_image(self, images, save_dir, iname):
 
@@ -688,3 +735,9 @@ class FineGAN_evaluator(object):
             ndarr = np.repeat(ndarr, 3, axis=2)
             im = Image.fromarray(ndarr)
             im.save(full_path)
+
+
+def save_image(fake_imgs, image_dir, iname, nrow, res):
+    img_name = '%s%d.png' % (iname, res)
+    vutils.save_image(fake_imgs, '%s/%s' %
+                      (image_dir, img_name), nrow=nrow, normalize=True)
