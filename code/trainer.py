@@ -221,6 +221,8 @@ class FineGAN_trainer(object):
         netD.zero_grad()
         real_logits = netD(real_imgs, self.alpha, masks)
 
+        self.D_real_conf = real_logits[1].mean()
+
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
 
@@ -252,13 +254,13 @@ class FineGAN_trainer(object):
         flag = count % 100
         batch_size = self.real_fimgs.size(0)
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
-
         for i in range(1, self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
                 real_labels = torch.ones_like(outputs[1])
                 errG = criterion_one(outputs[1], real_labels)
                 errG_total = errG_total + errG
+                D_fake_conf = outputs[1]
 
             if i == 1: # Mutual information loss for the parent stage (1)
                 pred_p = self.netsD[i](self.fg_mk[i-1], self.alpha)
@@ -278,6 +280,16 @@ class FineGAN_trainer(object):
                 if i == 2:
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
+
+        bg_code = self.bg_info[0]
+        bg_prob = self.bg_info[1]
+        bg_prob_tar = bg_prob.detach().clone()
+        tar_val = D_fake_conf / self.D_real_conf
+        print(tar_val.size())
+        sys.exit()
+        # for i in range(bg_prob_tar.size(0)):
+        #     bg_prob_tar[i]
+
 
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
@@ -408,7 +420,7 @@ class FineGAN_trainer(object):
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.recon_mk = self.netG(noise, self.c_code, self.alpha, self.beta)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.bg_info = self.netG(noise, self.c_code, self.alpha, self.beta)
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)

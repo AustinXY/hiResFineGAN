@@ -49,7 +49,6 @@ def convlxl(in_planes, out_planes):
 
 
 def child_to_parent(child_c_code, classes_child, classes_parent):
-
     ratio = classes_child / classes_parent
     arg_parent = torch.argmax(child_c_code,  dim=1) / ratio
     parent_c_code = torch.zeros([child_c_code.size(0), classes_parent]).cuda()
@@ -252,49 +251,26 @@ class TO_GRAY_LAYER(nn.Module):
         return out_img
 
 
-class Self_Attn(nn.Module):
-    """ Self attention Layer"""
+class DynamicMapping(nn.Module):
+    def __init__(self, c_dim, b_dim):
+        super().__init__()
+        self.c_dim = c_dim
+        self.b_dim = b_dim
+        self.define_module()
 
-    def __init__(self, in_dim, activation):
-        super(Self_Attn, self).__init__()
-        self.chanel_in = in_dim
-        self.activation = activation
+    def define_module(self):
+        c_dim = self.c_dim
+        b_dim = self.b_dim
+        self.fc1 = nn.Linear(c_dim, c_dim * 4)
+        self.fc2 = nn.Linear(c_dim * 4, c_dim * 4)
+        self.fc3 = nn.Linear(c_dim * 4, b_dim)
 
-        self.query_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
-        self.key_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
-        self.value_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
+    def forward(self, c_code):
+        b_prob = F.relu(self.fc1(c_code))
+        b_prob = F.relu(self.fc2(c_code))
+        b_prob = F.softmax(self.fc3(c_code))
+        return b_prob
 
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        """
-            inputs :
-                x : input feature maps( B X C X W X H)
-            returns :
-                out : self attention value + input feature
-                attention: B X N X N (N is Width*Height)
-        """
-        # return x, None
-        m_batchsize, C, width, height = x.size()
-        proj_query = self.query_conv(x).view(
-            m_batchsize, -1, width*height).permute(0, 2, 1)  # B X CX(N)
-        proj_key = self.key_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C x (*W*H)
-        energy = torch.bmm(proj_query, proj_key)  # transpose check
-        attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C X N
-
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
-
-        out = self.gamma*out + x
-        return out, attention
-        # return attention
 
 class G_NET(nn.Module):
     def __init__(self):
@@ -303,16 +279,16 @@ class G_NET(nn.Module):
         self.define_module()
 
     def define_module(self):
-        ngf = self.gf_dim
+        self.cb_mapping = DynamicMapping(
+            cfg.FINE_GRAINED_CATEGORIES, cfg.FINE_GRAINED_CATEGORIES)
 
+        ngf = self.gf_dim
         self.bg_code_init = INIT_STAGE_G(ngf * 8, c_flag=0)
         self.bg_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=0)])
         self.bg_img_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
 
         self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
         self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
-        # self.attn = Self_Attn(ngf // 2, 'relu')
-
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
 
@@ -328,8 +304,6 @@ class G_NET(nn.Module):
             self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
 
             self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
-            # self.attn = Self_Attn(ngf // 2, 'relu')
-
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
 
@@ -353,8 +327,6 @@ class G_NET(nn.Module):
 
         self.p_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=1).apply(weights_init))
-        # self.attn = Self_Attn(ngf // 2, 'relu')
-
         self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
 
@@ -367,18 +339,31 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
+    def child_to_bg(self, c_code):
+        bg_prob = self.cb_mapping(c_code)
+        bg_code = torch.zeros_like(c_code)
+        sort_prob, ind = torch.sort(bg_prob, descending=True, dim=1)
+        for i in range(sort_prob.size(0)):
+            prob = torch.rand(1)
+            for j in range(sort_prob.size(1)):
+                prob -= sort_prob[i][j]
+                if prob < 0:
+                    break
+            bg_code[i][ind[i][j]] = 1
+        return bg_code, bg_prob
 
+    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
         mk_imgs = []  # Will contain [parent mask, child mask]
         fg_mk = []  # Will contain [masked parent foreground, masked child foreground]
 
+        bg_prob = None
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
             p_code = child_to_parent(
                 c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
-            bg_code = c_code
+            bg_code, bg_prob = self.child_to_bg(c_code)
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
         h_code_p = self.p_code_init(z_code, p_code)
@@ -394,9 +379,6 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            # if i == self.cur_depth:
-            #     h_code_bg, bg_attn = self.attn(h_code_bg)
-
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img1 = fake_imgs[(i-1)*3]
@@ -405,9 +387,6 @@ class G_NET(nn.Module):
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
 
             h_code_p = _p_code_net(h_code_p, p_code)
-            # if i == self.cur_depth:
-            #     h_code_p, fg_attn = self.attn(h_code_p)
-
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -426,8 +405,6 @@ class G_NET(nn.Module):
 
             fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
             fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
-            # fake_img3_mk = fake_img2_mk * fake_img3_mk
-            # fake_img3_mk = (1 - 1) * fake_img3_mk + 1 * (fake_img2_mk * fake_img3_mk)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
                 prev_fake_img3_fg = F.upsample(
@@ -461,14 +438,8 @@ class G_NET(nn.Module):
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
 
-                # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
-                # recon_mask = self.recon_net(recon_info)
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [bg_code, bg_prob]
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, None
-
-def recon_mask_info(fg_attn, fg_mk):
-    ms = fg_mk.size()
-    return torch.bmm(fg_mk.view(ms[0], 1, ms[2]*ms[3]), fg_attn).view(ms)
 
 # ############## D networks ################################################
 def Block3x3_leakRelu(in_planes, out_planes):
