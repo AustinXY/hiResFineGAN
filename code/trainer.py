@@ -285,6 +285,8 @@ class FineGAN_trainer(object):
         bg_prob = self.bg_info[1]
         bg_prob_tar = bg_prob.detach().clone()
         tar_val = D_fake_conf / self.D_real_conf
+        print(self.D_real_conf.size())
+        print(D_fake_conf.size())
         print(tar_val.size())
         sys.exit()
         # for i in range(bg_prob_tar.size(0)):
