@@ -5,5 +5,4 @@ binary
 4. rand no tie b
 5. rand no tie z
 6. rand flip
-<\br>
-todo: change image preprocess function
+todo: modify image preprocess function
