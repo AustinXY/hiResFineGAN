@@ -266,10 +266,10 @@ class DynamicMapping(nn.Module):
         self.fc3 = nn.Linear(c_dim * 4, b_dim)
 
     def forward(self, c_code):
-        b_prob = F.relu(self.fc1(c_code))
-        b_prob = F.relu(self.fc2(b_prob))
-        b_prob = F.softmax(self.fc3(b_prob))
-        return b_prob
+        bg_prob = F.relu(self.fc1(c_code))
+        bg_prob = F.relu(self.fc2(bg_prob))
+        bg_prob = F.softmax(self.fc3(bg_prob))
+        return bg_prob
 
 
 class G_NET(nn.Module):
@@ -344,7 +344,7 @@ class G_NET(nn.Module):
         bg_code = torch.zeros_like(c_code)
         sort_prob, ind = torch.sort(bg_prob, descending=True, dim=1)
         for i in range(sort_prob.size(0)):
-            prob = torch.rand(1)
+            prob = torch.rand(1).cuda()
             for j in range(sort_prob.size(1)):
                 prob -= sort_prob[i][j]
                 if prob < 0:
