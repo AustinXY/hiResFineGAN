@@ -193,18 +193,16 @@ class FineGAN_trainer(object):
 
 
     def prepare_data(self, data):
-        fimgs, cimgs, c_code, _, masks = data
+        fimgs, cimgs, c_code, _ = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
-            masks = Variable(masks).cuda()
             real_vfimgs = Variable(fimgs).cuda()
             real_vcimgs = Variable(cimgs).cuda()
         else:
             vc_code = Variable(c_code)
-            masks = Variable(masks)
             real_vfimgs = Variable(fimgs)
             real_vcimgs = Variable(cimgs)
-        return fimgs, real_vfimgs, real_vcimgs, vc_code, masks
+        return fimgs, real_vfimgs, real_vcimgs, vc_code
 
 
     def train_Dnet(self, idx, count):
@@ -414,7 +412,7 @@ class FineGAN_trainer(object):
 
                     count += 1
                     _, self.real_fimgs, self.real_cimgs, \
-                        self.c_code, self.masks = self.prepare_data(data)
+                        self.c_code = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
