@@ -267,8 +267,8 @@ class DynamicMapping(nn.Module):
 
     def forward(self, c_code):
         b_prob = F.relu(self.fc1(c_code))
-        b_prob = F.relu(self.fc2(c_code))
-        b_prob = F.softmax(self.fc3(c_code))
+        b_prob = F.relu(self.fc2(b_prob))
+        b_prob = F.softmax(self.fc3(b_prob))
         return b_prob
 
 
