@@ -264,11 +264,14 @@ class DynamicMapping(nn.Module):
         self.fc1 = nn.Linear(c_dim, c_dim * 4)
         self.fc2 = nn.Linear(c_dim * 4, c_dim * 4)
         self.fc3 = nn.Linear(c_dim * 4, b_dim)
+        # self.fc = nn.Linear(c_dim, b_dim)
 
     def forward(self, c_code):
         bg_prob = F.relu(self.fc1(c_code))
         bg_prob = F.relu(self.fc2(bg_prob))
         bg_prob = F.softmax(self.fc3(bg_prob))
+
+        # bg_prob = F.softmax(self.fc(c_code))
         return bg_prob
 
 
@@ -315,7 +318,6 @@ class G_NET(nn.Module):
 
         self.gf_dim = ngf
         self.cur_depth = start_depth
-        self.recon_net = RECON_NET()
 
     def inc_depth(self):
         # oneline apply should work??
@@ -344,12 +346,16 @@ class G_NET(nn.Module):
         bg_code = torch.zeros_like(c_code)
         sort_prob, ind = torch.sort(bg_prob, descending=True, dim=1)
         for i in range(sort_prob.size(0)):
-            prob = torch.rand(1).cuda()
-            for j in range(sort_prob.size(1)):
-                prob -= sort_prob[i][j]
-                if prob < 0:
-                    break
-            bg_code[i][ind[i][j]] = 1
+            if sort_prob[i][0] < 0.1:
+                bid = torch.nonzero(c_code[i])[0]
+            else:
+                prob = torch.rand(1).cuda()
+                for j in range(sort_prob.size(1)):
+                    prob -= sort_prob[i][j]
+                    if prob < 0:
+                        break
+                bid = ind[i][j]
+            bg_code[i][bid] = 1
         # detach??????
         return bg_code.detach(), bg_prob
 
@@ -464,98 +470,12 @@ def downBlock(in_channels, out_channels, kernel_size=3, stride=1, padding=1, dil
     return block
 
 
-class MnetConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
-        super().__init__()
-        self.input_conv = nn.Conv2d(
-            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-        self.mask_conv = nn.Conv2d(
-            1, 1, kernel_size, stride, padding, dilation, groups, False)
-
-        # mask is not updated
-        for param in self.mask_conv.parameters():
-            param.requires_grad = False
-
-    def forward(self, input, mask):
-        """
-        input is regular tensor with shape N*C*H*W
-        mask has to have 1 channel N*1*H*W
-        """
-        output = self.input_conv(input)
-        if mask != None:
-            mask = self.mask_conv(mask)
-        return output, mask
-
-
-class downBlock_mnet(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
-        super().__init__()
-        self.conv = MnetConv(in_channels, out_channels,
-                             kernel_size, stride, padding, dilation, groups, bias)
-        # self.bn = nn.BatchNorm2d(out_channels)
-
-    def forward(self, input, mask=None):
-        """
-        input is regular tensor with shape N*C*H*W
-        mask has to have 1 channel N*1*H*W
-        """
-        output, mask = self.conv(input, mask)
-        # output = self.bn(output)
-        output = F.leaky_relu(output, 0.2, inplace=True)
-        output = F.avg_pool2d(output, 2)
-        if mask != None:
-            mask = F.avg_pool2d(mask, 2)
-        return output, mask
-
-
 def fromRGB_layer(out_planes):
     layer = nn.Sequential(
         nn.Conv2d(3, out_planes, 1, 1, 0, bias=False),
         nn.LeakyReLU(0.2, inplace=True)
     )
     return layer
-
-
-def fromGRAY_layer(out_planes):
-    layer = nn.Sequential(
-        nn.Conv2d(1, out_planes, 1, 1, 0, bias=False),
-        nn.LeakyReLU(0.2, inplace=True)
-    )
-    return layer
-
-
-class RECON_NET(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.df_dim = 64
-        self.define_module()
-
-    def define_module(self):
-        ndf = self.df_dim
-        self.from_gray = fromGRAY_layer(ndf)
-        self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
-        self.sameblock1 = sameBlock(ndf * 2, ndf * 2)
-        self.downblock2 = downBlock(ndf * 2, ndf * 4, 3, 1, 1)
-        self.sameblock2 = sameBlock(ndf * 4, ndf * 4)
-
-        self.upblock1 = upBlock(ndf * 4, ndf * 2)
-        self.sameblock3 = sameBlock(ndf * 2, ndf * 2)
-        self.upblock2 = upBlock(ndf * 2, ndf)
-        self.sameblock4 = sameBlock(ndf, ndf)
-        self.to_gray = TO_GRAY_LAYER(ndf)
-
-    def forward(self, mask_info):
-        recon_mask = self.from_gray(mask_info)
-        recon_mask = self.downblock1(recon_mask)
-        recon_mask = self.sameblock1(recon_mask)
-        recon_mask = self.downblock2(recon_mask)
-        recon_mask = self.sameblock2(recon_mask)
-        recon_mask = self.upblock1(recon_mask)
-        recon_mask = self.sameblock3(recon_mask)
-        recon_mask = self.upblock2(recon_mask)
-        recon_mask = self.sameblock4(recon_mask)
-        recon_mask = self.to_gray(recon_mask)
-        return recon_mask
 
 
 class D_NET_PC_BASE(nn.Module):

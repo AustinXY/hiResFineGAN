@@ -279,33 +279,37 @@ class FineGAN_trainer(object):
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
+        fg_mk = self.mk_imgs[0]
+        # bg_mk = torch.ones_like(fg_mk) - fg_mk
+        # ch_mk = self.mk_imgs[1]
+        ms = fg_mk.size()
+        min_fg_cvg = 0.05 * ms[2] * ms[3]
+        # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
+        binary_loss = self.binarization_loss(fg_mk) * 10
+        # conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
+        fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
+
         bg_code = self.bg_info[0]
         bg_prob = self.bg_info[1]
         tar_val = D_fake_conf / torch.max(D_fake_conf)
         _bg_prob_tar = bg_code * tar_val.unsqueeze(1)
         bg_prob_tar = (torch.ones_like(bg_code) - bg_code) * bg_prob + _bg_prob_tar
-        mapping_loss = criterion_one(bg_prob, bg_prob_tar.detach()) * 1
+        # ml_wt = (1e-3 / torch.sum(bg_code * bg_prob).mean()).detach()
+        mapping_loss = F.mse_loss(bg_prob, bg_prob_tar.detach(), reduction='sum') / ms[0] * 1e-1
 
-        fg_mk = self.mk_imgs[0]
-        # bg_mk = torch.ones_like(fg_mk) - fg_mk
-        # ch_mk = self.mk_imgs[1]
-        ms = fg_mk.size()
-        min_fg_cvg = 0.1 * ms[2] * ms[3]
-        # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
-        binary_loss = self.binarization_loss(fg_mk) * 1
-        # conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
-        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
-        fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
-
-        errG_total += binary_loss + fg_cvg_loss
+        errG_total += binary_loss + fg_cvg_loss + mapping_loss
 
         self.ml = mapping_loss
         self.bl = binary_loss
+        self.mp = torch.max(bg_prob)
         # self.cl = conc_loss
         # self.ol = oob_loss
         self.fl = fg_cvg_loss
 
         errG_total.backward()
+        # torch.set_printoptions(profile="full")
+        # print(self.netG.module.cb_mapping.fc.weight.grad)
         for myit in range(3):
             self.optimizerG[myit].step()
         return errG_total
@@ -435,8 +439,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, mapping_loss: {}, fg_cvg_loss: {}".
-                              format(self.bl.item(), self.ml.item(), self.fl.item()))
+                        print("binary_loss: {}, mapping_loss: {}, fg_cvg_loss: {}, max_prob: {}".
+                              format(self.bl.item(), self.ml.item(), self.fl.item(), self.mp.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
