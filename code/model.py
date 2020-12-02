@@ -350,7 +350,8 @@ class G_NET(nn.Module):
                 if prob < 0:
                     break
             bg_code[i][ind[i][j]] = 1
-        return bg_code, bg_prob
+        # detach??????
+        return bg_code.detach(), bg_prob
 
     def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
         fake_imgs = []  # Will contain [background image, parent image, child image]

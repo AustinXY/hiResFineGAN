@@ -221,9 +221,7 @@ class FineGAN_trainer(object):
         netD.zero_grad()
         real_logits = netD(real_imgs, self.alpha, masks)
 
-        self.D_real_conf = real_logits[1].mean()
-        print(real_logits[1].size())
-        print(self.D_real_conf)
+        # self.D_real_conf = real_logits[1].mean()
 
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
@@ -285,33 +283,29 @@ class FineGAN_trainer(object):
 
         bg_code = self.bg_info[0]
         bg_prob = self.bg_info[1]
-        bg_prob_tar = bg_prob.detach().clone()
-        tar_val = D_fake_conf / self.D_real_conf
-        print(self.D_real_conf.size())
-        print(D_fake_conf)
-        print(bg_code.size())
-        sys.exit()
-        # for i in range(bg_prob_tar.size(0)):
-        #     bg_prob_tar[i]
-
+        tar_val = D_fake_conf / torch.max(D_fake_conf)
+        _bg_prob_tar = bg_code * tar_val.unsqueeze(1)
+        bg_prob_tar = (torch.ones_like(bg_code) - bg_code) * bg_prob + _bg_prob_tar
+        mapping_loss = criterion_one(bg_prob, bg_prob_tar.detach()) * 1
 
         fg_mk = self.mk_imgs[0]
-        bg_mk = torch.ones_like(fg_mk) - fg_mk
-        ch_mk = self.mk_imgs[1]
+        # bg_mk = torch.ones_like(fg_mk) - fg_mk
+        # ch_mk = self.mk_imgs[1]
         ms = fg_mk.size()
-        min_fg_cvg = 0.3 * ms[2] * ms[3]
+        min_fg_cvg = 0.1 * ms[2] * ms[3]
         # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
-        binary_loss = self.binarization_loss(fg_mk) * 20
-        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
-        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
+        binary_loss = self.binarization_loss(fg_mk) * 1
+        # conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
 
-        errG_total += binary_loss + oob_loss + conc_loss + fg_cvg_loss
+        errG_total += binary_loss + fg_cvg_loss
 
-        self.cl = fg_cvg_loss
+        self.ml = mapping_loss
         self.bl = binary_loss
-        self.ol = oob_loss
-        # self.fl = fg_cvg_loss
+        # self.cl = conc_loss
+        # self.ol = oob_loss
+        self.fl = fg_cvg_loss
 
         errG_total.backward()
         for myit in range(3):
@@ -443,8 +437,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, oob_loss: {}, cvg_loss: {}".
-                              format(self.bl.item(), self.ol.item(), self.cl.item()))
+                        print("binary_loss: {}, mapping_loss: {}, fg_cvg_loss: {}".
+                              format(self.bl.item(), self.ml.item(), self.fl.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
