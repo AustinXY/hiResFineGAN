@@ -222,6 +222,8 @@ class FineGAN_trainer(object):
         real_logits = netD(real_imgs, self.alpha, masks)
 
         self.D_real_conf = real_logits[1].mean()
+        print(real_logits[1].size())
+        print(self.D_real_conf)
 
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
