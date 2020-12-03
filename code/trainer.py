@@ -193,21 +193,18 @@ class FineGAN_trainer(object):
 
 
     def prepare_data(self, data):
-        fimgs, cimgs, c_code, _ = data
+        cimgs, c_code, _ = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
-            real_vfimgs = Variable(fimgs).cuda()
             real_vcimgs = Variable(cimgs).cuda()
         else:
             vc_code = Variable(c_code)
-            real_vfimgs = Variable(fimgs)
             real_vcimgs = Variable(cimgs)
-        return fimgs, real_vfimgs, real_vcimgs, vc_code
+        return real_vcimgs, vc_code
 
 
     def train_Dnet(self, idx, count):
         flag = count % 100
-        batch_size = self.real_fimgs.size(0)
         criterion, criterion_one = self.criterion, self.criterion_one
 
         netD, optD = self.netsD[idx], self.optimizersD[idx]
@@ -250,7 +247,6 @@ class FineGAN_trainer(object):
 
         errG_total = 0
         flag = count % 100
-        batch_size = self.real_fimgs.size(0)
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
         for i in range(1, self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
@@ -404,8 +400,7 @@ class FineGAN_trainer(object):
                     self.beta = 1
 
                     count += 1
-                    _, self.real_fimgs, self.real_cimgs, \
-                        self.c_code = self.prepare_data(data)
+                    self.real_cimgs, self.c_code = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
@@ -502,7 +497,7 @@ class FineGAN_trainer(object):
         # start_t = time.time()
         # for step, data in enumerate(self.data_loader, 0):
 
-        #     _, self.real_fimgs, self.real_cimgs, \
+        #     _, self.real_cimgs, \
         #         self.c_code, self.warped_bbox = self.prepare_data(data)
 
         #     if (count % 2) == 0: # Train on normal batch of images

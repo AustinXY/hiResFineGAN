@@ -60,24 +60,11 @@ def get_imgs(img_path, cur_depth, bbox=None,
     if transform is not None:
         cimg = transform(cimg)
 
-    retf = []
     retc = []
     re_cimg = transforms.Scale(imsize)(cimg)
 
     retc = normalize(re_cimg)
-
-    resize = transforms.Resize(int(imsize * 76 / 64))
-    re_fimg = resize(fimg)
-
-    i, j, h, w = transforms.RandomCrop.get_params(
-        re_fimg, output_size=(imsize, imsize))
-    re_fimg = TF.crop(re_fimg, i, j, h, w)
-
-    if random.random() > 0.5:
-        re_fimg = TF.hflip(re_fimg)
-
-    retf = normalize(re_fimg)
-    return retf, retc
+    return retc
 
 
 class Dataset(data.Dataset):
@@ -139,14 +126,14 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        fimgs, cimgs = get_imgs(img_name, self.cur_depth,
+        cimgs = get_imgs(img_name, self.cur_depth,
                                        bbox, self.transform, normalize=self.norm)
 
         # Randomly generating child code during training
         rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
-        return fimgs, cimgs, c_code, key
+        return cimgs, c_code, key
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]
@@ -157,7 +144,7 @@ class Dataset(data.Dataset):
         data_dir = self.data_dir
         c_code = self.c_code[index, :, :]
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        _, imgs = get_imgs(img_name, self.cur_depth,
+        imgs = get_imgs(img_name, self.cur_depth,
                               bbox, self.transform, normalize=self.norm)
 
         return imgs, c_code, key
