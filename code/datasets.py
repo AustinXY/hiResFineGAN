@@ -79,7 +79,8 @@ class Dataset(data.Dataset):
 
         self.data = []
         self.data_dir = data_dir
-        self.bbox = self.load_bbox()
+        # self.bbox = self.load_bbox()
+        self.bbox = None
         self.filenames = self.load_filenames(data_dir)
         if cfg.TRAIN.FLAG:
             self.iterator = self.prepair_training_pairs
