@@ -6,6 +6,7 @@ from miscc.config import cfg
 from torch.autograd import Variable
 import torch.nn.functional as F
 from torch.nn import Upsample
+# import random
 
 start_depth = cfg.TRAIN.START_DEPTH
 
@@ -251,30 +252,6 @@ class TO_GRAY_LAYER(nn.Module):
         return out_img
 
 
-class DynamicMapping(nn.Module):
-    def __init__(self, c_dim, b_dim):
-        super().__init__()
-        self.c_dim = c_dim
-        self.b_dim = b_dim
-        self.define_module()
-
-    def define_module(self):
-        c_dim = self.c_dim
-        b_dim = self.b_dim
-        self.fc1 = nn.Linear(c_dim, c_dim * 4)
-        self.fc2 = nn.Linear(c_dim * 4, c_dim * 4)
-        self.fc3 = nn.Linear(c_dim * 4, b_dim)
-        # self.fc = nn.Linear(c_dim, b_dim)
-
-    def forward(self, c_code):
-        bg_prob = F.relu(self.fc1(c_code))
-        bg_prob = F.relu(self.fc2(bg_prob))
-        bg_prob = F.softmax(self.fc3(bg_prob))
-
-        # bg_prob = F.softmax(self.fc(c_code))
-        return bg_prob
-
-
 class G_NET(nn.Module):
     def __init__(self):
         super().__init__()
@@ -282,9 +259,6 @@ class G_NET(nn.Module):
         self.define_module()
 
     def define_module(self):
-        self.cb_mapping = DynamicMapping(
-            cfg.FINE_GRAINED_CATEGORIES, cfg.FINE_GRAINED_CATEGORIES)
-
         ngf = self.gf_dim
         self.bg_code_init = INIT_STAGE_G(ngf * 8, c_flag=0)
         self.bg_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=0)])
@@ -342,22 +316,15 @@ class G_NET(nn.Module):
         self.cur_depth += 1
 
     def child_to_bg(self, c_code):
-        bg_prob = self.cb_mapping(c_code)
         bg_code = torch.zeros_like(c_code)
-        sort_prob, ind = torch.sort(bg_prob, descending=True, dim=1)
-        for i in range(sort_prob.size(0)):
-            if sort_prob[i][0] < 0.1:
+        for i in range(c_code.size(0)):
+            if torch.rand(1) < 0.5:
                 bid = torch.nonzero(c_code[i])[0]
             else:
-                prob = torch.rand(1).cuda()
-                for j in range(sort_prob.size(1)):
-                    prob -= sort_prob[i][j]
-                    if prob < 0:
-                        break
-                bid = ind[i][j]
+                bid = torch.randint(0, c_code.size(1)-1, ())
             bg_code[i][bid] = 1
         # detach??????
-        return bg_code.detach(), bg_prob
+        return bg_code
 
     def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
         fake_imgs = []  # Will contain [background image, parent image, child image]
@@ -370,7 +337,7 @@ class G_NET(nn.Module):
             # Obtaining the parent code from child code
             p_code = child_to_parent(
                 c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
-            bg_code, bg_prob = self.child_to_bg(c_code)
+            bg_code = self.child_to_bg(c_code)
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
         h_code_p = self.p_code_init(z_code, p_code)
@@ -445,7 +412,7 @@ class G_NET(nn.Module):
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [bg_code, bg_prob]
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk
 
 
 # ############## D networks ################################################

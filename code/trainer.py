@@ -283,26 +283,15 @@ class FineGAN_trainer(object):
         # bg_mk = torch.ones_like(fg_mk) - fg_mk
         # ch_mk = self.mk_imgs[1]
         ms = fg_mk.size()
-        min_fg_cvg = 0.05 * ms[2] * ms[3]
-        # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
+        min_fg_cvg = 0.2 * ms[2] * ms[3]
         binary_loss = self.binarization_loss(fg_mk) * 10
-        # conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
-        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
 
-        bg_code = self.bg_info[0]
-        bg_prob = self.bg_info[1]
-        tar_val = D_fake_conf / torch.max(D_fake_conf)
-        _bg_prob_tar = bg_code * tar_val.unsqueeze(1)
-        bg_prob_tar = (torch.ones_like(bg_code) - bg_code) * bg_prob + _bg_prob_tar
-        # ml_wt = (1e-3 / torch.sum(bg_code * bg_prob).mean()).detach()
-        mapping_loss = F.mse_loss(bg_prob, bg_prob_tar.detach(), reduction='sum') / ms[0] * 1e-1
+        errG_total += binary_loss + fg_cvg_loss
 
-        errG_total += binary_loss + fg_cvg_loss + mapping_loss
-
-        self.ml = mapping_loss
+        # self.ml = mapping_loss
         self.bl = binary_loss
-        self.mp = torch.max(bg_prob)
+        # self.mp = torch.max(bg_prob)
         # self.cl = conc_loss
         # self.ol = oob_loss
         self.fl = fg_cvg_loss
@@ -420,7 +409,7 @@ class FineGAN_trainer(object):
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.bg_info = self.netG(noise, self.c_code, self.alpha, self.beta)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise, self.c_code, self.alpha, self.beta)
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
@@ -439,8 +428,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, mapping_loss: {}, fg_cvg_loss: {}, max_prob: {}".
-                              format(self.bl.item(), self.ml.item(), self.fl.item(), self.mp.item()))
+                        print("binary_loss: {}, fg_cvg_loss: {}".
+                              format(self.bl.item(), self.fl.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -448,7 +437,7 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
                         save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
