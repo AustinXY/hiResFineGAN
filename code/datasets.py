@@ -39,73 +39,29 @@ def is_image_file(filename):
     return any(filename.endswith(extension) for extension in IMG_EXTENSIONS)
 
 
-def get_mask(imshape, bbox, cur_depth):
-    """
-    - px (int): number of pixels to pad horizontally
-    - py (int): number of pixels to pad vertically
-    """
-    px = cfg.TRAIN.PAD[cur_depth]
-    py = cfg.TRAIN.PAD[cur_depth]
-
-    c, r = imshape
-    x1, y1, w, h = bbox
-    x2 = x1 + w + px
-    y2 = y1 + h + py
-    x1 = x1 - px
-    y1 = y1 - py
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(c-1, x2)
-    y2 = min(r-1, y2)
-    mk = np.zeros((r, c))
-    mk[y1:y2+1, x1:x2+1] = 1
-    return Image.fromarray(mk)
-
-
 def get_imgs(img_path, cur_depth, bbox=None,
              transform=None, normalize=None):
-    imsize = 32 * (2 ** cur_depth)
-    img = Image.open(img_path).convert('RGB')
-    mask = get_mask(img.size, bbox, cur_depth)
-    width, height = img.size
-    if bbox is not None:
-        r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
-        center_x = int((2 * bbox[0] + bbox[2]) / 2)
-        center_y = int((2 * bbox[1] + bbox[3]) / 2)
-        y1 = np.maximum(0, center_y - r)
-        y2 = np.minimum(height, center_y + r)
-        x1 = np.maximum(0, center_x - r)
-        x2 = np.minimum(width, center_x + r)
-        fimg = deepcopy(img)
-        fimg_arr = np.array(fimg)
-        fimg = Image.fromarray(fimg_arr)
-        cimg = img.crop([x1, y1, x2, y2])
+    # imsize = 32 * (2 ** cur_depth)
+    cimg = Image.open(img_path).convert('RGB')
+    width, height = cimg.size
+    # if bbox is not None:
+    #     r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
+    #     center_x = int((2 * bbox[0] + bbox[2]) / 2)
+    #     center_y = int((2 * bbox[1] + bbox[3]) / 2)
+    #     y1 = np.maximum(0, center_y - r)
+    #     y2 = np.minimum(height, center_y + r)
+    #     x1 = np.maximum(0, center_x - r)
+    #     x2 = np.minimum(width, center_x + r)
+    #     cimg = cimg.crop([x1, y1, x2, y2])
 
     if transform is not None:
         cimg = transform(cimg)
 
-    retf = []
     retc = []
-    re_cimg = transforms.Scale(imsize)(cimg)
+    # re_cimg = transforms.Resize(imsize)(cimg)
 
-    retc = normalize(re_cimg)
-
-    resize = transforms.Resize(int(imsize * 76 / 64))
-    re_fimg = resize(fimg)
-    re_mk = resize(mask)
-
-    i, j, h, w = transforms.RandomCrop.get_params(
-        re_fimg, output_size=(imsize, imsize))
-    re_fimg = TF.crop(re_fimg, i, j, h, w)
-    re_mk = TF.crop(re_mk, i, j, h, w)
-
-    if random.random() > 0.5:
-        re_fimg = TF.hflip(re_fimg)
-        re_mk = TF.hflip(re_mk)
-
-    retf = normalize(re_fimg)
-    retmk = torch.tensor(np.array(re_mk)).view(1, imsize, imsize)
-    return retf, retc, retmk
+    retc = normalize(cimg)
+    return retc
 
 
 class Dataset(data.Dataset):
@@ -120,7 +76,8 @@ class Dataset(data.Dataset):
 
         self.data = []
         self.data_dir = data_dir
-        self.bbox = self.load_bbox()
+        # self.bbox = self.load_bbox()
+        self.bbox = None
         self.filenames = self.load_filenames(data_dir)
         if cfg.TRAIN.FLAG:
             self.iterator = self.prepair_training_pairs
@@ -167,15 +124,14 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        fimgs, cimgs, masks = get_imgs(img_name, self.cur_depth,
-                                       bbox, self.transform, normalize=self.norm)
+        cimgs = get_imgs(img_name, self.cur_depth,
+                         bbox, self.transform, normalize=self.norm)
 
         # Randomly generating child code during training
         rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
-
-        return fimgs, cimgs, c_code, key, masks
+        return cimgs, c_code, key
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]
@@ -186,8 +142,8 @@ class Dataset(data.Dataset):
         data_dir = self.data_dir
         c_code = self.c_code[index, :, :]
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        _, imgs, _ = get_imgs(img_name, self.cur_depth,
-                              bbox, self.transform, normalize=self.norm)
+        imgs = get_imgs(img_name, self.cur_depth,
+                        bbox, self.transform, normalize=self.norm)
 
         return imgs, c_code, key
 

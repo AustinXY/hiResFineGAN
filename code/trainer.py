@@ -191,25 +191,19 @@ class FineGAN_trainer(object):
         torch.cuda.set_device(self.gpus[0])
         cudnn.benchmark = True
 
-
     def prepare_data(self, data):
-        fimgs, cimgs, c_code, _, masks = data
+        cimgs, c_code, _ = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
-            masks = Variable(masks).cuda()
-            real_vfimgs = Variable(fimgs).cuda()
             real_vcimgs = Variable(cimgs).cuda()
         else:
             vc_code = Variable(c_code)
-            masks = Variable(masks)
-            real_vfimgs = Variable(fimgs)
             real_vcimgs = Variable(cimgs)
-        return fimgs, real_vfimgs, real_vcimgs, vc_code, masks
+        return real_vcimgs, vc_code
 
 
     def train_Dnet(self, idx, count):
         flag = count % 100
-        batch_size = self.real_fimgs.size(0)
         criterion, criterion_one = self.criterion, self.criterion_one
 
         netD, optD = self.netsD[idx], self.optimizersD[idx]
@@ -250,7 +244,6 @@ class FineGAN_trainer(object):
 
         errG_total = 0
         flag = count % 100
-        batch_size = self.real_fimgs.size(0)
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
 
         for i in range(1, self.num_Ds):
@@ -320,9 +313,10 @@ class FineGAN_trainer(object):
 
     def get_dataloader(self, cur_depth):
         bshuffle = True
-        imsize = 32 * (2 ** (cur_depth + 1))
+        imsize = 32 * (2 ** cur_depth)
         image_transform = transforms.Compose([
-            transforms.Resize(int(imsize * 76 / 64)),
+            # transforms.Resize(int(imsize * 76 / 64)),
+            transforms.Resize(imsize),
             transforms.RandomCrop(imsize),
             transforms.RandomHorizontalFlip()])
 
@@ -373,11 +367,12 @@ class FineGAN_trainer(object):
             depth_ep_ctr = 0  # depth epoch counter
             batch_size = batchsize_per_depth[cur_depth] * self.num_gpus
 
-            noise = Variable(torch.FloatTensor(batch_size, nz))
+            noise_fg = Variable(torch.FloatTensor(batch_size, nz))
+            noise_bg = Variable(torch.FloatTensor(batch_size, nz))
             fixed_noise = Variable(torch.FloatTensor(batch_size, nz).normal_(0, 1))
 
             if cfg.CUDA:
-                noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
+                noise_fg, noise_bg, fixed_noise = noise_fg.cuda(), noise_bg.cuda(), fixed_noise.cuda()
 
             start_epoch = start_count // (num_batches)
             start_count = 0
@@ -403,12 +398,15 @@ class FineGAN_trainer(object):
                     self.beta = 1
 
                     count += 1
-                    _, self.real_fimgs, self.real_cimgs, \
-                        self.c_code, self.masks = self.prepare_data(data)
+                    self.real_cimgs, self.c_code = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
-                    noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.recon_mk = self.netG(noise, self.c_code, self.alpha, self.beta)
+                    noise_fg.data.normal_(0, 1)
+                    noise_bg.data.normal_(0, 1)
+                    if torch.rand(1) > 0.5:
+                        self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise_fg, noise_fg, self.c_code, self.alpha, self.beta)
+                    else:
+                        self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise_fg, noise_bg, self.c_code, self.alpha, self.beta)
 
                     # Obtain the parent code given the child code
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
@@ -436,7 +434,7 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, fixed_noise, self.c_code, self.alpha)
                         save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #

@@ -367,7 +367,7 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
+    def forward(self, z_code_fg, z_code_bg, c_code, alpha=None, p_code=None, bg_code=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
@@ -380,8 +380,8 @@ class G_NET(nn.Module):
                 c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
             bg_code = c_code
 
-        h_code_bg = self.bg_code_init(z_code, bg_code)
-        h_code_p = self.p_code_init(z_code, p_code)
+        h_code_bg = self.bg_code_init(z_code_bg, bg_code)
+        h_code_p = self.p_code_init(z_code_fg, p_code)
 
         for i in range(self.cur_depth + 1):
             _bg_code_net = self.bg_code_net[i]
@@ -464,7 +464,7 @@ class G_NET(nn.Module):
                 # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
                 # recon_mask = self.recon_net(recon_info)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, None
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()
