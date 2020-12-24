@@ -253,8 +253,10 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
-        ch_mk = self.mk_imgs[1]
-        bg_masked = bg_mk * self.fake_imgs[0]
+        # ch_mk = self.mk_imgs[1]
+        bg_of_bg = bg_mk * self.fake_imgs[0]
+        fg_of_bg = fg_mk * self.fake_imgs[0]
+        bg_masked = torch.cat((bg_of_bg, fg_of_bg), dim=0)
 
         p_info_wt = 1.
         c_info_wt = 1.
@@ -269,6 +271,9 @@ class FineGAN_trainer(object):
             if i == 1: # Mutual information loss for the parent stage (1)
                 pred_p = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_p[0], torch.nonzero(p_code.long())[:,1]) * p_info_wt
+                print(p_code.size())
+                print(torch.nonzero(p_code.long())[:,1])
+                sys.exit()
             elif i == 2: # Mutual information loss for the child stage (2)
                 pred_c = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1]) * c_info_wt
