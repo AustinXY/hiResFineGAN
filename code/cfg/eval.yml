@@ -12,7 +12,7 @@ TIED_CODES: False
 
 TRAIN:
     FLAG: False
-    NET_G: '/data/yang_data/nbx-bin/output/stanford-car_2020_12_01_01_31_29/Model/netG_57440_depth2.pth'
+    NET_G: '../output/stanford-car_2020_12_22_02_47_47/Model/netG_57440_depth2.pth'
     BATCH_SIZE: 1
     START_DEPTH: 2
 

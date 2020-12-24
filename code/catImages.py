@@ -2,8 +2,8 @@ from PIL import Image
 import os
 
 
-count = 57000
-train_dir = 'stanford-car_2020_12_01_09_52_15'
+count = 17000
+train_dir = 'stanford-car_2020_12_21_22_17_17'
 
 
 def get_concat_v(im1, im2):
