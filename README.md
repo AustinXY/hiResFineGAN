@@ -1,11 +1,6 @@
-binary
+bg mutual info loss
 1. bg masked and reverse bg masked predict the same bg code
 2. (1) use patch level discriminator
-<br>
-2. concentration + out of bound
-3. dynamic c -> b code mapping
-4. rand no tie b
-5. rand no tie z
-6. rand flip <br>
+3. focus fg generator on bbox area; artifitially create bbox for fg, feed artifitially bboxed and real bboxed through a new discriminator
 <br>
 
