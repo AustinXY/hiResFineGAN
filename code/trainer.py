@@ -253,14 +253,14 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
-        # ch_mk = self.mk_imgs[1]
+        ch_mk = self.mk_imgs[1]
         bg_of_bg = bg_mk * self.fake_imgs[0]
         fg_of_bg = fg_mk * self.fake_imgs[0]
         bg_masked = torch.cat((bg_of_bg, fg_of_bg), dim=0)
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 0.5
+        b_info_wt = 1.
         for i in range(self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
@@ -271,16 +271,15 @@ class FineGAN_trainer(object):
             if i == 1: # Mutual information loss for the parent stage (1)
                 pred_p = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_p[0], torch.nonzero(p_code.long())[:,1]) * p_info_wt
-                print(p_code.size())
-                print(torch.nonzero(p_code.long())[:,1])
-                sys.exit()
+
             elif i == 2: # Mutual information loss for the child stage (2)
                 pred_c = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1]) * c_info_wt
+
             elif i == 0: # Mutual information loss for the background stage (0)
                 # pred_b = self.netsD[i](self.fake_imgs[0], self.alpha)
                 pred_b = self.netsD[i](bg_masked, self.alpha)
-                errG_info = criterion_class(pred_b[0], torch.nonzero(c_code.long())[:,1]) * b_info_wt
+                errG_info = criterion_class(pred_b[0], torch.nonzero(torch.cat((c_code, c_code), dim=0).long())[:,1]) * b_info_wt
 
             errG_total = errG_total + errG_info
 
@@ -295,18 +294,15 @@ class FineGAN_trainer(object):
 
         ms = fg_mk.size()
         min_fg_cvg = 0.3 * ms[2] * ms[3]
-        # recon_loss = F.mse_loss(self.recon_mk, fg_mk) * 10
         binary_loss = self.binarization_loss(fg_mk) * 20
-        conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
-        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
+        # conc_loss = self.concentration_loss(fg_mk, bg_mk) * 0
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
 
-        errG_total += binary_loss + oob_loss + conc_loss + fg_cvg_loss
+        errG_total += binary_loss + fg_cvg_loss
 
         self.cl = fg_cvg_loss
         self.bl = binary_loss
-        self.ol = oob_loss
-        # self.fl = fg_cvg_loss
 
         errG_total.backward()
         for myit in range(len(self.optimizerG)):
@@ -438,8 +434,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, oob_loss: {}, cvg_loss: {}".
-                              format(self.bl.item(), self.ol.item(), self.cl.item()))
+                        print("binary_loss: {}, cvg_loss: {}".
+                              format(self.bl.item(), self.cl.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
