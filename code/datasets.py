@@ -44,24 +44,26 @@ def get_imgs(img_path, cur_depth, bbox=None,
     # imsize = 32 * (2 ** cur_depth)
     cimg = Image.open(img_path).convert('RGB')
     width, height = cimg.size
-    # if bbox is not None:
-    #     r = int(np.maximum(bbox[2], bbox[3]) * 0.75)
-    #     center_x = int((2 * bbox[0] + bbox[2]) / 2)
-    #     center_y = int((2 * bbox[1] + bbox[3]) / 2)
-    #     y1 = np.maximum(0, center_y - r)
-    #     y2 = np.minimum(height, center_y + r)
-    #     x1 = np.maximum(0, center_x - r)
-    #     x2 = np.minimum(width, center_x + r)
-    #     cimg = cimg.crop([x1, y1, x2, y2])
+    fg_bboxed = None
+    if bbox is not None:
+        x1, y1, w, h = bbox
+        x2 = x1 + w
+        y2 = y1 + h
+        bbox_mk = torch.zeros(3, height, width)
+        bbox_mk[:, y1: y2+1, x1: x2+1] = 1
+        fg_bboxed = transforms.ToTensor()(cimg)
+        fg_bboxed = bbox_mk * fg_bboxed
+        fg_bboxed = transforms.ToPILImage()(fg_bboxed)
 
     if transform is not None:
         cimg = transform(cimg)
+        fg_bboxed = transform(fg_bboxed)
 
-    retc = []
     # re_cimg = transforms.Resize(imsize)(cimg)
 
     retc = normalize(cimg)
-    return retc
+    retfbb = normalize(fg_bboxed)
+    return retc, retfbb
 
 
 class Dataset(data.Dataset):
@@ -76,8 +78,8 @@ class Dataset(data.Dataset):
 
         self.data = []
         self.data_dir = data_dir
-        # self.bbox = self.load_bbox()
-        self.bbox = None
+        self.bbox = self.load_bbox()
+        # self.bbox = None
         self.filenames = self.load_filenames(data_dir)
         if cfg.TRAIN.FLAG:
             self.iterator = self.prepair_training_pairs
@@ -85,10 +87,8 @@ class Dataset(data.Dataset):
             self.iterator = self.prepair_test_pairs
 
     # only used in background stage
-
     def load_bbox(self):
         # Returns a dictionary with image filename as 'key' and its bounding box coordinates as 'value'
-
         data_dir = self.data_dir
         bbox_path = os.path.join(data_dir, 'bounding_boxes.txt')
         df_bounding_boxes = pd.read_csv(bbox_path,
@@ -124,14 +124,14 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        cimgs = get_imgs(img_name, self.cur_depth,
+        cimgs, fg_bboxed = get_imgs(img_name, self.cur_depth,
                          bbox, self.transform, normalize=self.norm)
 
         # Randomly generating child code during training
         rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
-        return cimgs, c_code, key
+        return cimgs, c_code, key, fg_bboxed
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]

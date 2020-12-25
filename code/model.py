@@ -409,6 +409,24 @@ class G_NET(nn.Module):
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
 
+        TRSHLD = 0.8
+        fg_bboxed = fake_img3_final.clone()  # child final
+        for i in range(z_code.size(0)):
+            crd = torch.nonzero(fake_img2_mk[i, 0] >= TRSHLD)
+            if crd.size(0) == 0:
+                x1, x2, y1, y2 = (0, -1, 0, -1)
+            else:
+                x1 = torch.min(crd[:,1])
+                x2 = torch.max(crd[:,1])
+                y1 = torch.min(crd[:,0])
+                y2 = torch.max(crd[:,0])
+
+            bbox = torch.zeros_like(fg_bboxed[0])
+            bbox[y1: y2+1, x1: x2+1] = 1
+            fg_bboxed[i] = fg_bboxed[i] * bbox
+
+        fake_imgs.append(fg_bboxed)
+
         return fake_imgs, fg_imgs, mk_imgs, fg_mk
 
 def recon_mask_info(fg_attn, fg_mk):

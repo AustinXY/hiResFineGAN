@@ -120,21 +120,17 @@ def load_network(gpus):
 def define_optimizers(netG, netsD):
     optimizersD = []
     num_Ds = len(netsD)
-    # for i in range(1, num_Ds):
-    opt = optim.Adam(netsD[2].parameters(),
+    for i in range(num_Ds):
+        opt = optim.Adam(netsD[i].parameters(),
                         lr=cfg.TRAIN.DISCRIMINATOR_LR,
                         betas=(0.5, 0.999))
-    optimizersD.append(opt)
+
+        optimizersD.append(opt)
 
     optimizerG = []
     optimizerG.append(optim.Adam(netG.parameters(),
                             lr=cfg.TRAIN.GENERATOR_LR,
                             betas=(0.5, 0.999)))
-
-    opt = optim.Adam(netsD[0].parameters(),
-                     lr=cfg.TRAIN.GENERATOR_LR,
-                     betas=(0.5, 0.999))
-    optimizerG.append(opt)
 
     opt = optim.Adam(netsD[1].parameters(),
                      lr=cfg.TRAIN.GENERATOR_LR,
@@ -197,29 +193,34 @@ class FineGAN_trainer(object):
         cudnn.benchmark = True
 
     def prepare_data(self, data):
-        cimgs, c_code, _ = data
+        cimgs, c_code, _, fg_bboxed = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
             real_vcimgs = Variable(cimgs).cuda()
+            fg_bboxed = Variable(fg_bboxed).cuda()
         else:
             vc_code = Variable(c_code)
             real_vcimgs = Variable(cimgs)
-        return real_vcimgs, vc_code
+            fg_bboxed = Variable(fg_bboxed)
+        return real_vcimgs, vc_code, fg_bboxed
 
 
-    def train_Dnet(self, count):
-        idx = 2
+    def train_Dnet(self, count, idx):
+
         flag = count % 100
         criterion, criterion_one = self.criterion, self.criterion_one
 
-        netD, optD = self.netsD[idx], self.optimizersD[0]
+        netD, optD = self.netsD[idx], self.optimizersD[idx]
 
-        real_imgs = self.real_cimgs
-        masks = None
+        if idx == 2:  # child stage
+            fake_imgs = self.fake_imgs[2]
+            real_imgs = self.real_cimgs
+        else:         # bg stage
+            fake_imgs = self.fake_imgs[3]
+            real_imgs = self.fg_bboxed
 
-        fake_imgs = self.fake_imgs[idx]
         netD.zero_grad()
-        real_logits = netD(real_imgs, self.alpha, masks)
+        real_logits = netD(real_imgs, self.alpha)
 
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
@@ -253,17 +254,17 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class, c_code, p_code = self.criterion_one, self.criterion_class, self.c_code, self.p_code
         fg_mk = self.mk_imgs[0]
         bg_mk = torch.ones_like(fg_mk) - fg_mk
-        ch_mk = self.mk_imgs[1]
-        bg_of_bg = bg_mk * self.fake_imgs[0]
-        fg_of_bg = fg_mk * self.fake_imgs[0]
-        bg_masked = torch.cat((bg_of_bg, fg_of_bg), dim=0)
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 1.
         for i in range(self.num_Ds):
-            if i == 2:  # real/fake loss for background (0) and child (2) stage
-                outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
+            if i == 0 or i == 2:  # real/fake loss for background (0) and child (2) stage
+                if i == 0:
+                    fake_img = self.fake_imgs[3]
+                else:
+                    fake_img = self.fake_imgs[2]
+
+                outputs = self.netsD[i](fake_img, self.alpha)
                 real_labels = torch.ones_like(outputs[1])
                 errG = criterion_one(outputs[1], real_labels)
                 errG_total = errG_total + errG
@@ -276,17 +277,13 @@ class FineGAN_trainer(object):
                 pred_c = self.netsD[i](self.fg_mk[i-1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1]) * c_info_wt
 
-            elif i == 0: # Mutual information loss for the background stage (0)
-                # pred_b = self.netsD[i](self.fake_imgs[0], self.alpha)
-                pred_b = self.netsD[i](bg_masked, self.alpha)
-                errG_info = criterion_class(pred_b[0], torch.nonzero(torch.cat((c_code, c_code), dim=0).long())[:,1]) * b_info_wt
-
-            errG_total = errG_total + errG_info
+            if i > 0:
+                errG_total = errG_total + errG_info
 
             if flag == 0:
-                # if i > 0:
-                summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
-                self.summary_writer.add_summary(summary_D_class, count)
+                if i > 0:
+                    summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
+                    self.summary_writer.add_summary(summary_D_class, count)
 
                 if i == 2:
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
@@ -411,7 +408,7 @@ class FineGAN_trainer(object):
                     self.beta = 1
 
                     count += 1
-                    self.real_cimgs, self.c_code = self.prepare_data(data)
+                    self.real_cimgs, self.c_code, self.fg_bboxed = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
@@ -425,7 +422,8 @@ class FineGAN_trainer(object):
                     self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
 
                     # Update Discriminator networks
-                    errD_total = self.train_Dnet(count)
+                    errD_total = self.train_Dnet(count, 0)
+                    errD_total = self.train_Dnet(count, 2)
 
                     # Update the Generator networks
                     errG_total = self.train_Gnet(count)
@@ -444,7 +442,7 @@ class FineGAN_trainer(object):
                         load_params(self.netG, avg_param_G)
 
                         fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
+                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [self.fg_bboxed]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
