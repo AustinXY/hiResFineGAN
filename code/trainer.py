@@ -79,7 +79,7 @@ def load_network(gpus):
     # print(netG)
 
     netsD = []
-    netsD.append(D_NET_BG(op=1))
+    netsD.append(D_NET_BG(op=2))
     netsD.append(D_NET_PC(1))
     netsD.append(D_NET_PC(2))
 
