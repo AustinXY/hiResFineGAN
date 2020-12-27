@@ -738,7 +738,10 @@ def bbox_resize(bbox, img, imsize=None):
     if imsize is None:
         imsize = img.size(-1)
 
-    _bbox = ops.box_convert(bbox, in_fmt='xyxy', out_fmt='xywh')
+    try:
+        _bbox = ops.box_convert(bbox, in_fmt='xyxy', out_fmt='xywh')
+    except:
+        _bbox = box_convert(bbox)
     for i in range(img.size(0)):
         x, y, w, h = (_bbox[i] * orig_size).int()
         img[i] = transforms.Resize(imsize)(
@@ -748,3 +751,9 @@ def bbox_resize(bbox, img, imsize=None):
 def roi_op_bbox(bbox):
     batch_idx = torch.tensor(range(bbox.size(0)), dtype=torch.float).cuda()
     return torch.cat((batch_idx.view(-1, 1), bbox), dim=1)
+
+def box_convert(bbox):
+    _bbox = bbox.clone()
+    _bbox[:, 2] = _bbox[:, 2] - _bbox[:, 0]
+    _bbox[:, 3] = _bbox[:, 3] - _bbox[:, 1]
+    return _bbox
