@@ -41,29 +41,50 @@ def is_image_file(filename):
 
 def get_imgs(img_path, cur_depth, bbox=None,
              transform=None, normalize=None):
-    # imsize = 32 * (2 ** cur_depth)
-    cimg = Image.open(img_path).convert('RGB')
-    width, height = cimg.size
-    fg_bboxed = None
-    if bbox is not None:
-        x1, y1, w, h = bbox
-        x2 = x1 + w
-        y2 = y1 + h
-        bbox_mk = torch.zeros(3, height, width)
-        bbox_mk[:, y1: y2+1, x1: x2+1] = 1
-        fg_bboxed = transforms.ToTensor()(cimg)
-        fg_bboxed = bbox_mk * fg_bboxed
-        fg_bboxed = transforms.ToPILImage()(fg_bboxed)
+    imsize = 32 * (2 ** cur_depth)
+    img = Image.open(img_path).convert('RGB')
+    width, height = img.size
+    # if bbox is not None:
+    fimg = deepcopy(img)
+    fimg_arr = np.array(fimg)
+    fimg = Image.fromarray(fimg_arr)
 
-    if transform is not None:
-        cimg = transform(cimg)
-        fg_bboxed = transform(fg_bboxed)
+    re_fimg = transforms.Resize(int(imsize * 65 / 64))(fimg)
+    re_width, re_height = re_fimg.size
 
-    # re_cimg = transforms.Resize(imsize)(cimg)
+    # random cropping
+    x_crop_range = re_width - imsize
+    y_crop_range = re_height - imsize
 
-    retc = normalize(cimg)
-    retfbb = normalize(fg_bboxed)
-    return retc, retfbb
+    crop_start_x = np.random.randint(x_crop_range)
+    crop_start_y = np.random.randint(y_crop_range)
+
+    crop_re_fimg = re_fimg.crop(
+        [crop_start_x, crop_start_y, crop_start_x + imsize, crop_start_y + imsize])
+    warped_x1 = bbox[0] * re_width / width
+    warped_y1 = bbox[1] * re_height / height
+    warped_x2 = warped_x1 + (bbox[2] * re_width / width)
+    warped_y2 = warped_y1 + (bbox[3] * re_height / height)
+
+    warped_x1 = min(max(0, warped_x1 - crop_start_x), imsize)
+    warped_y1 = min(max(0, warped_y1 - crop_start_y), imsize)
+    warped_x2 = max(min(imsize, warped_x2 - crop_start_x), 0)
+    warped_y2 = max(min(imsize, warped_y2 - crop_start_y), 0)
+
+    # random flipping
+    random_flag = np.random.randint(2)
+    if random_flag == 0:
+        crop_re_fimg = crop_re_fimg.transpose(Image.FLIP_LEFT_RIGHT)
+        flipped_x1 = imsize - warped_x2
+        flipped_x2 = imsize - warped_x1
+        warped_x1 = flipped_x1
+        warped_x2 = flipped_x2
+
+    retf = normalize(crop_re_fimg)
+
+    warped_bbox = torch.tensor([warped_x1, warped_y1, warped_x2, warped_y2], dtype=torch.float)
+    normal_bbox = warped_bbox / imsize
+    return retf, normal_bbox
 
 
 class Dataset(data.Dataset):
@@ -124,14 +145,14 @@ class Dataset(data.Dataset):
             bbox = None
         data_dir = self.data_dir
         img_name = '%s/images/%s.jpg' % (data_dir, key)
-        cimgs, fg_bboxed = get_imgs(img_name, self.cur_depth,
+        cimgs, normal_bbox = get_imgs(img_name, self.cur_depth,
                          bbox, self.transform, normalize=self.norm)
 
         # Randomly generating child code during training
         rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
         c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
         c_code[rand_class] = 1
-        return cimgs, c_code, key, fg_bboxed
+        return cimgs, c_code, key, normal_bbox
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]

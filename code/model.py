@@ -2,10 +2,12 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import torchvision
 from miscc.config import cfg
 from torch.autograd import Variable
 import torch.nn.functional as F
 from torch.nn import Upsample
+from torchvision import ops, transforms
 
 start_depth = cfg.TRAIN.START_DEPTH
 
@@ -410,24 +412,21 @@ class G_NET(nn.Module):
                 mk_imgs.append(fake_img3_mk)
 
         TRSHLD = 0.8
-        fg_bboxed = fake_img3_final.clone()  # child final
+        bbox = []
         for i in range(z_code.size(0)):
             crd = torch.nonzero(fake_img2_mk[i, 0] >= TRSHLD)
             if crd.size(0) == 0:
-                x1, x2, y1, y2 = (0, -1, 0, -1)
+                x1, x2, y1, y2 = (0., -1., 0., -1.)
             else:
-                x1 = torch.min(crd[:,1])
-                x2 = torch.max(crd[:,1])
-                y1 = torch.min(crd[:,0])
-                y2 = torch.max(crd[:,0])
+                x1 = torch.min(crd[:,1]).item()
+                x2 = torch.max(crd[:,1]).item()
+                y1 = torch.min(crd[:,0]).item()
+                y2 = torch.max(crd[:,0]).item()
 
-            bbox = torch.zeros_like(fg_bboxed[0])
-            bbox[y1: y2+1, x1: x2+1] = 1
-            fg_bboxed[i] = fg_bboxed[i] * bbox
+            bbox.append([x1, y1, x2, y2])
 
-        fake_imgs.append(fg_bboxed)
-
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk
+        bbox = torch.tensor(bbox, dtype=torch.float).cuda() / fake_img3_final.size(-1)
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, bbox
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()
@@ -593,15 +592,10 @@ class D_NET_PC(nn.Module):
         super().__init__()
         self.df_dim = 256
         self.stg_no = stg_no
-        if self.stg_no == 1:
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif self.stg_no == 2:
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         self.define_module()
 
     def define_module(self):
         ndf = self.df_dim
-        efg = self.ef_dim
 
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
         self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
@@ -636,3 +630,121 @@ class D_NET_PC(nn.Module):
         code_pred = x_code[0]
         rf_score = x_code[1]
         return [code_pred, rf_score]
+
+
+class D_NET_BG_BASE(nn.Module):
+    def __init__(self, ndf, op=0):
+        super().__init__()
+        self.df_dim = ndf
+        self.op = op
+        self.define_module()
+
+    def define_module(self):
+        ndf = self.df_dim
+        self.conv = nn.Sequential(
+            nn.Conv2d(ndf, ndf // 8, 3, 1, 1),
+            nn.BatchNorm2d(ndf // 8),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        self.rf_pred = nn.Sequential(
+            nn.Linear(1568, 1),
+            nn.Sigmoid())
+
+        if self.op == 2:
+            self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
+            self.downblock2 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
+            self.downblock3 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
+            # self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
+            self.uncond_logits = nn.Sequential(
+                nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4),
+                nn.Sigmoid())
+
+    def forward(self, x_code, bbox):
+        if self.op < 2:
+            bbox = bbox * x_code.size(-1)
+            if self.op == 0:  # roi align
+                x_code = ops.roi_align(x_code, roi_op_bbox(bbox), 7)
+            else:  # roi pool
+                x_code = ops.roi_pool(x_code, roi_op_bbox(bbox), 7)
+
+            x_code = self.conv(x_code)
+            rf_score = self.rf_pred(x_code.view(x_code.size(0), -1))
+
+        else:  # roi resize
+            x_code = self.downblock1(x_code)  # 512 * 16 * 16
+            x_code = self.downblock2(x_code)  # 512 * 8 * 8
+            x_code = self.downblock3(x_code)  # 512 * 4 * 4
+            rf_score = self.uncond_logits(x_code)
+        return rf_score.view(-1)
+
+
+class D_NET_BG(nn.Module):
+    def __init__(self, op=0):
+        super().__init__()
+        self.df_dim = 256
+        self.op = op
+        self.define_module()
+
+    def define_module(self):
+        ndf = self.df_dim
+        self.base_net = D_NET_BG_BASE(ndf, op=self.op)
+        self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
+        self.down_net = nn.ModuleList()
+        ndf = ndf // 2
+
+        for _ in range(start_depth):
+            self.from_RGB_net.append(fromRGB_layer(ndf))
+            self.down_net.append(downBlock(ndf, ndf * 2, 3, 1, 1))
+            ndf = ndf // 2
+
+        self.df_dim = ndf
+        self.cur_depth = start_depth
+
+    def inc_depth(self):
+        ndf = self.df_dim
+        self.from_RGB_net.append(fromRGB_layer(ndf).apply(weights_init))
+        self.down_net.append(downBlock(ndf, ndf * 2, 3, 1, 1).apply(weights_init))
+        ndf = ndf // 2
+        self.df_dim = ndf
+        self.cur_depth = self.cur_depth + 1
+
+    def forward(self, x_var, bbox, alpha=None):
+        if self.op < 2:
+            x_var = bbox_crop(bbox, x_var)
+        else:  # roi resize
+            x_var = bbox_resize(bbox, x_var)
+
+        x_code = self.from_RGB_net[self.cur_depth](x_var)
+        for i in range(self.cur_depth-1, -1, -1):
+            x_code = self.down_net[i](x_code)
+            if i == self.cur_depth and i != start_depth and alpha < 1:
+                y_var = F.avg_pool2d(x_var, 2)
+                y_code = self.from_RGB_net[i-1](y_var)
+                x_code = (1 - alpha) * y_code + alpha * x_code
+
+        rf_score = self.base_net(x_code, bbox)
+        return [None, rf_score]
+
+def bbox_crop(bbox, img):
+    bbox_tnsr = torch.zeros_like(img)
+    for i in range(bbox.size(0)):
+        x1, y1, x2, y2 = (bbox[i] * img.size(-1)).int()
+        bbox_tnsr[i, :, y1: y2+1, x1: x2+1] = 1
+    return bbox_tnsr * img
+
+
+def bbox_resize(bbox, img, imsize=None):
+    orig_size = img.size(-1)
+    if imsize is None:
+        imsize = img.size(-1)
+
+    _bbox = ops.box_convert(bbox, in_fmt='xyxy', out_fmt='xywh')
+    for i in range(img.size(0)):
+        x, y, w, h = (_bbox[i] * orig_size).int()
+        img[i] = transforms.Resize(imsize)(
+            transforms.functional.crop(img[i], y, x, h, w))
+    return img
+
+def roi_op_bbox(bbox):
+    batch_idx = torch.tensor(range(bbox.size(0)), dtype=torch.float).cuda()
+    return torch.cat((batch_idx.view(-1, 1), bbox), dim=1)

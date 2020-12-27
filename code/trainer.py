@@ -28,7 +28,7 @@ import torchvision.transforms as transforms
 from datetime import datetime
 
 
-from model import G_NET, D_NET_PC
+from model import G_NET, D_NET_PC, D_NET_BG
 
 
 start_depth = cfg.TRAIN.START_DEPTH
@@ -79,7 +79,7 @@ def load_network(gpus):
     # print(netG)
 
     netsD = []
-    netsD.append(D_NET_PC(2))
+    netsD.append(D_NET_BG(op=1))
     netsD.append(D_NET_PC(1))
     netsD.append(D_NET_PC(2))
 
@@ -193,42 +193,44 @@ class FineGAN_trainer(object):
         cudnn.benchmark = True
 
     def prepare_data(self, data):
-        cimgs, c_code, _, fg_bboxed = data
+        cimgs, c_code, _, bbox = data
         if cfg.CUDA:
             vc_code = Variable(c_code).cuda()
             real_vcimgs = Variable(cimgs).cuda()
-            fg_bboxed = Variable(fg_bboxed).cuda()
+            for i in range(len(bbox)):
+                bbox[i] = Variable(bbox[i]).float().cuda()
         else:
             vc_code = Variable(c_code)
             real_vcimgs = Variable(cimgs)
-            fg_bboxed = Variable(fg_bboxed)
-        return real_vcimgs, vc_code, fg_bboxed
+            for i in range(len(bbox)):
+                bbox[i] = Variable(bbox[i]).float().cuda()
+        return real_vcimgs, vc_code, bbox
 
 
     def train_Dnet(self, count, idx):
-
         flag = count % 100
         criterion, criterion_one = self.criterion, self.criterion_one
 
         netD, optD = self.netsD[idx], self.optimizersD[idx]
 
-        if idx == 2:  # child stage
-            fake_imgs = self.fake_imgs[2]
-            real_imgs = self.real_cimgs
-        else:         # bg stage
-            fake_imgs = self.fake_imgs[3]
-            real_imgs = self.fg_bboxed
+        fake_imgs = self.fake_imgs[2]
+        real_imgs = self.real_cimgs
 
         netD.zero_grad()
-        real_logits = netD(real_imgs, self.alpha)
+        if idx == 2:
+            real_logits = netD(real_imgs, self.alpha)
+            fake_logits = netD(fake_imgs.detach(), self.alpha)
+        else:
+            real_bbox = self.bbox
+            fake_bbox = self.gen_bbox
+            real_logits = netD(real_imgs, real_bbox, self.alpha)
+            fake_logits = netD(fake_imgs.detach(), fake_bbox, self.alpha)
 
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
-
-        fake_logits = netD(fake_imgs.detach(), self.alpha)
-
         errD_real = criterion_one(real_logits[1], real_labels) # Real/Fake loss for the real image
         errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
+
         errD = errD_real + errD_fake
 
         errD.backward()
@@ -259,14 +261,17 @@ class FineGAN_trainer(object):
         c_info_wt = 1.
         for i in range(self.num_Ds):
             if i == 0 or i == 2:  # real/fake loss for background (0) and child (2) stage
-                if i == 0:
-                    fake_img = self.fake_imgs[3]
-                else:
-                    fake_img = self.fake_imgs[2]
+                fake_img = self.fake_imgs[2]
 
-                outputs = self.netsD[i](fake_img, self.alpha)
+                if i == 2:
+                    outputs = self.netsD[i](fake_img, self.alpha)
+                    rf_wt = 1.
+                else:
+                    outputs = self.netsD[i](fake_img, self.gen_bbox, self.alpha)
+                    rf_wt = 1.
+
                 real_labels = torch.ones_like(outputs[1])
-                errG = criterion_one(outputs[1], real_labels)
+                errG = criterion_one(outputs[1], real_labels) * rf_wt
                 errG_total = errG_total + errG
 
             if i == 1: # Mutual information loss for the parent stage (1)
@@ -325,11 +330,12 @@ class FineGAN_trainer(object):
     def get_dataloader(self, cur_depth):
         bshuffle = True
         imsize = 32 * (2 ** cur_depth)
-        image_transform = transforms.Compose([
-            # transforms.Resize(int(imsize * 76 / 64)),
-            transforms.Resize(imsize),
-            transforms.RandomCrop(imsize),
-            transforms.RandomHorizontalFlip()])
+        # image_transform = transforms.Compose([
+        #     # transforms.Resize(int(imsize * 76 / 64)),
+        #     transforms.Resize(imsize),
+        #     transforms.RandomCrop(imsize),
+        #     transforms.RandomHorizontalFlip()])
+        image_transform = None
 
         dataset = Dataset(cfg.DATA_DIR,
                           cur_depth=cur_depth,
@@ -346,6 +352,13 @@ class FineGAN_trainer(object):
         self.xc = xc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         self.yc = yc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         return dataloader
+
+    def bbox_crop(self, bbox, img):
+        bbox_tnsr = torch.zeros_like(img)
+        for i in range(bbox.size(0)):
+            x1, y1, x2, y2 = (bbox[i] * img.size(-1)).int()
+            bbox_tnsr[i, :, y1: y2+1, x1: x2+1] = 1
+        return bbox_tnsr * img
 
     def train(self):
         self.netG, self.netsD, self.num_Ds, start_count = load_network(self.gpus)
@@ -408,13 +421,13 @@ class FineGAN_trainer(object):
                     self.beta = 1
 
                     count += 1
-                    self.real_cimgs, self.c_code, self.fg_bboxed = self.prepare_data(data)
+                    self.real_cimgs, self.c_code, self.bbox = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
                     # noise_bg.data.normal_(0, 1)
                     # if torch.rand(1) > 0.5:
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise, self.c_code, self.alpha, self.beta)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, self.gen_bbox = self.netG(noise, self.c_code, self.alpha, self.beta)
                     # else:
                     #     self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise_fg, noise_bg, self.c_code, self.alpha, self.beta)
 
@@ -441,8 +454,10 @@ class FineGAN_trainer(object):
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(fixed_noise, self.c_code, self.alpha)
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [self.fg_bboxed]),
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk, gen_bbox = self.netG(fixed_noise, self.c_code, self.alpha)
+                        real_bboxed = self.bbox_crop(self.bbox, self.real_cimgs)
+                        fake_bboxed = self.bbox_crop(gen_bbox, fake_imgs[2])
+                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [real_bboxed, fake_bboxed]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
