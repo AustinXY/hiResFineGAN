@@ -6,6 +6,7 @@ from miscc.config import cfg
 from torch.autograd import Variable
 import torch.nn.functional as F
 from torch.nn import Upsample
+import math
 
 start_depth = cfg.TRAIN.START_DEPTH
 
@@ -48,15 +49,22 @@ def convlxl(in_planes, out_planes):
                      padding=1, bias=False)
 
 
-def child_to_parent(child_c_code, classes_child, classes_parent):
+def child_to_parent(c_code):
+    ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
+    pid = (torch.argmax(c_code,  dim=1) // ratio).long()
+    p_code = torch.zeros([c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
+    for i in range(c_code.size(0)):
+        p_code[i][pid[i]] = 1
+    return p_code
 
-    ratio = classes_child / classes_parent
-    arg_parent = torch.argmax(child_c_code,  dim=1) / ratio
-    parent_c_code = torch.zeros([child_c_code.size(0), classes_parent]).cuda()
-    for i in range(child_c_code.size(0)):
-        parent_c_code[i][arg_parent[i].type(torch.LongTensor)] = 1
-    return parent_c_code
-
+def child_to_background(c_code):
+    cid = torch.argmax(c_code,  dim=1)
+    bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+    bid = cid % bg_categories
+    b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
+    for i in range(c_code.size(0)):
+        b_code[i][bid[i]] = 1
+    return b_code
 
 # ############## G networks ################################################
 # Upsale the spatial size by a factor of 2
@@ -116,8 +124,11 @@ class INIT_STAGE_G(nn.Module):
 
         if self.c_flag == 1:  # parent
             self.in_dim = cfg.GAN.Z_DIM + cfg.SUPER_CATEGORIES
-        elif self.c_flag == 0:  # child and bg
+        elif self.c_flag == 2:  # child
             self.in_dim = cfg.GAN.Z_DIM + cfg.FINE_GRAINED_CATEGORIES
+        else:  # bg
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.in_dim = cfg.GAN.Z_DIM + bg_categories
 
         self.define_module()
 
@@ -155,9 +166,11 @@ class NEXT_STAGE_G_SAME(nn.Module):
         self.gf_dim = ngf
         if use_hrc == 1:  # For parent stage
             self.ef_dim = cfg.SUPER_CATEGORIES
-
-        else:            # For child and background stage
+        elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        else:
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.ef_dim = bg_categories
 
         self.num_residual = num_residual
         self.define_module()
@@ -192,9 +205,11 @@ class NEXT_STAGE_G_UP(nn.Module):
         self.gf_dim = ngf
         if use_hrc == 1:  # For parent stage
             self.ef_dim = cfg.SUPER_CATEGORIES
-
-        else:            # For child and background stage
+        elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        else:  # bg
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.ef_dim = bg_categories
 
         self.num_residual = num_residual
         self.define_module()
@@ -252,50 +267,6 @@ class TO_GRAY_LAYER(nn.Module):
         return out_img
 
 
-class Self_Attn(nn.Module):
-    """ Self attention Layer"""
-
-    def __init__(self, in_dim, activation):
-        super(Self_Attn, self).__init__()
-        self.chanel_in = in_dim
-        self.activation = activation
-
-        self.query_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
-        self.key_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim//1, kernel_size=1)
-        self.value_conv = nn.Conv2d(
-            in_channels=in_dim, out_channels=in_dim, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x):
-        """
-            inputs :
-                x : input feature maps( B X C X W X H)
-            returns :
-                out : self attention value + input feature
-                attention: B X N X N (N is Width*Height)
-        """
-        # return x, None
-        m_batchsize, C, width, height = x.size()
-        proj_query = self.query_conv(x).view(
-            m_batchsize, -1, width*height).permute(0, 2, 1)  # B X CX(N)
-        proj_key = self.key_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C x (*W*H)
-        energy = torch.bmm(proj_query, proj_key)  # transpose check
-        attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(
-            m_batchsize, -1, width*height)  # B X C X N
-
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
-
-        out = self.gamma*out + x
-        return out, attention
-        # return attention
-
 class G_NET(nn.Module):
     def __init__(self):
         super().__init__()
@@ -316,8 +287,7 @@ class G_NET(nn.Module):
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
 
-        self.c_code_net = nn.ModuleList(
-            [NEXT_STAGE_G_SAME(ngf // 2, use_hrc=0)])
+        self.c_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf // 2, use_hrc=2)])
         self.c_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 4)])
         self.c_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 4)])
 
@@ -333,7 +303,7 @@ class G_NET(nn.Module):
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
 
-            self.c_code_net.append(NEXT_STAGE_G_SAME(ngf // 2, use_hrc=0))
+            self.c_code_net.append(NEXT_STAGE_G_SAME(ngf // 2, use_hrc=2))
             self.c_fg_net.append(TO_RGB_LAYER(ngf // 4))
             self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4))
 
@@ -359,7 +329,7 @@ class G_NET(nn.Module):
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
 
         self.c_code_net.append(NEXT_STAGE_G_SAME(
-            ngf // 2, use_hrc=0).apply(weights_init))
+            ngf // 2, use_hrc=2).apply(weights_init))
         self.c_fg_net.append(TO_RGB_LAYER(ngf // 4).apply(weights_init))
         self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4).apply(weights_init))
 
@@ -376,8 +346,8 @@ class G_NET(nn.Module):
 
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
-            p_code = child_to_parent(
-                c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+            p_code = child_to_parent(c_code)
+            # bg_code = child_to_background(c_code)
             bg_code = c_code
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
@@ -464,7 +434,7 @@ class G_NET(nn.Module):
                 # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
                 # recon_mask = self.recon_net(recon_info)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, None
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, bg_code]
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()
@@ -595,6 +565,10 @@ class D_NET_PC_BASE(nn.Module):
             self.ef_dim = cfg.SUPER_CATEGORIES
         elif self.stg_no == 2:
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        else:
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.ef_dim = bg_categories
+
         self.define_module()
 
     def define_module(self):
@@ -634,6 +608,9 @@ class D_NET_PC(nn.Module):
             self.ef_dim = cfg.SUPER_CATEGORIES
         elif self.stg_no == 2:
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        else:
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.ef_dim = bg_categories
         self.define_module()
 
     def define_module(self):
