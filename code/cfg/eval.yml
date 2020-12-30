@@ -8,11 +8,14 @@ FINE_GRAINED_CATEGORIES: 196   # For CUB
 TEST_CHILD_CLASS: 125      # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
 TEST_PARENT_CLASS: 0      # specify any value [0, SUPER_CATEGORIES - 1]
 TEST_BACKGROUND_CLASS: 0  # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
+
+NUM_C_PER_B: 2   # c/b
+
 TIED_CODES: False
 
 TRAIN:
     FLAG: False
-    NET_G: '/data/yang_data/nbx-bin/output/stanford-car_2020_12_01_01_31_29/Model/netG_57440_depth2.pth'
+    NET_G: '../output/car_2020_12_29_02_20_23/Model/netG_57440_depth2.pth'
     BATCH_SIZE: 1
     START_DEPTH: 2
 

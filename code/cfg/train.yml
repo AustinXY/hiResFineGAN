@@ -12,7 +12,9 @@ FINE_GRAINED_CATEGORIES: 196  # For CUB
 # FINE_GRAINED_CATEGORIES: 200  # For CUB
 # BG_CATEGORIES: 200
 # NUM_B_PER_P: 10  # b/p
-NUM_C_PER_B: 1   # c/b
+# NUM_P_PER_B: 2   # p/b
+NUM_C_PER_B: 2   # c/b
+
 TIED_CODES: True   # Do NOT change this to False during training.
 
 TRAIN:
@@ -27,7 +29,7 @@ TRAIN:
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
     MIN_FG_CVG: 0.1
-    MIN_BG_CVG: 0.1
+    # MIN_BG_CVG: 0.1
 
     START_DEPTH: 2 # 32 has depth 0; should match loaded model depth
     END_DEPTH: 2  # 256 has depth 3

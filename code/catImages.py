@@ -3,7 +3,7 @@ import os
 
 
 count = 57000
-train_dir = 'stanford-car_2020_12_01_09_52_15'
+train_dir = 'car_2020_12_29_02_20_23'
 
 
 def get_concat_v(im1, im2):

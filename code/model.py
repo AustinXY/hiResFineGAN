@@ -66,6 +66,16 @@ def child_to_background(c_code):
         b_code[i][bid[i]] = 1
     return b_code
 
+# def parent_to_background(p_code):
+#     pid = torch.argmax(p_code,  dim=1)
+#     bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
+#     b_code = torch.zeros([p_code.size(0), bg_categories]).cuda()
+#     for i in range(p_code.size(0)):
+#         b_bin = pid[i] // cfg.NUM_P_PER_B
+#         bid = torch.randint(b_bin * cfg.NUM_B_PER_P, (b_bin+1) * cfg.NUM_B_PER_P, (1,))
+#         b_code[i][bid] = 1
+#     return b_code
+
 # ############## G networks ################################################
 # Upsale the spatial size by a factor of 2
 def upBlock(in_planes, out_planes):
@@ -128,6 +138,8 @@ class INIT_STAGE_G(nn.Module):
             self.in_dim = cfg.GAN.Z_DIM + cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
             bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
+            # print(bg_categories)
             self.in_dim = cfg.GAN.Z_DIM + bg_categories
 
         self.define_module()
@@ -147,7 +159,6 @@ class INIT_STAGE_G(nn.Module):
         # self.upsample5 = upBlock(ngf // 16, ngf // 16)
 
     def forward(self, z_code, code):
-
         in_code = torch.cat((code, z_code), 1)
         out_code = self.fc(in_code)
         out_code = out_code.view(-1, self.gf_dim, 4, 4)  # 1024 * 4 * 4
@@ -170,6 +181,7 @@ class NEXT_STAGE_G_SAME(nn.Module):
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
             bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
 
         self.num_residual = num_residual
@@ -209,6 +221,7 @@ class NEXT_STAGE_G_UP(nn.Module):
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
             bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
 
         self.num_residual = num_residual
@@ -347,8 +360,8 @@ class G_NET(nn.Module):
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
             p_code = child_to_parent(c_code)
-            # bg_code = child_to_background(c_code)
-            bg_code = c_code
+            bg_code = child_to_background(c_code)
+            # bg_code = parent_to_background(p_code)
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
         h_code_p = self.p_code_init(z_code, p_code)
@@ -567,6 +580,7 @@ class D_NET_PC_BASE(nn.Module):
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
             bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
 
         self.define_module()
@@ -610,6 +624,7 @@ class D_NET_PC(nn.Module):
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
             bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
         self.define_module()
 

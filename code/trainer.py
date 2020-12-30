@@ -258,7 +258,7 @@ class FineGAN_trainer(object):
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 0.
+        b_info_wt = 1.
         for i in range(self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
@@ -286,20 +286,20 @@ class FineGAN_trainer(object):
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
-        fg_mk = self.mk_imgs[0]
-        bg_mk = torch.ones_like(fg_mk) - fg_mk
+        # fg_mk = self.mk_imgs[0]
+        # bg_mk = torch.ones_like(fg_mk) - fg_mk
         ch_mk = self.mk_imgs[1]
         ms = fg_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
         min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
         binary_loss = self.binarization_loss(fg_mk) * 10
-        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
+        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
-        bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
+        # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
 
-        errG_total += binary_loss + fg_cvg_loss + bg_cvg_loss + oob_loss
+        errG_total += binary_loss + fg_cvg_loss + oob_loss  # + bg_cvg_loss + oob_loss
 
-        self.cl = fg_cvg_loss + bg_cvg_loss
+        self.cl = fg_cvg_loss # + bg_cvg_loss
         self.bl = binary_loss
         self.ol = oob_loss
 
@@ -515,6 +515,7 @@ class FineGAN_evaluator(object):
 
     def evaluate_finegan(self):
         random.seed(datetime.now())
+        torch.manual_seed(random.randint(0, 9999))
         depth = cfg.TRAIN.START_DEPTH
         res = 32 * 2 ** depth
         if cfg.TRAIN.NET_G == '':
@@ -552,17 +553,16 @@ class FineGAN_evaluator(object):
                 noise = noise.cuda()
 
             netG.eval()
+            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
 
-            b = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
+            b = random.randint(0, bg_categories-1)
             p = random.randint(0, cfg.SUPER_CATEGORIES-1)
             c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
-            bg_code = torch.zeros(
-                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            bg_code = torch.zeros([self.batch_size, bg_categories])
             p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
-            c_code = torch.zeros(
-                [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
 
-            nrow = 1
+            nrow = 10
             bg_li = []
             pf_li = []
             cf_li = []
@@ -572,20 +572,23 @@ class FineGAN_evaluator(object):
             cfg_li = []
             pfgmk_li = []
             cfgmk_li = []
-            c_li = np.random.randint(
-                0, cfg.FINE_GRAINED_CATEGORIES-1, size=nrow)
-            for k in range(10):
-                p = random.randint(0, cfg.SUPER_CATEGORIES-1)
+            b_li = np.random.permutation(bg_categories-1)
+            p_li = np.random.permutation(cfg.SUPER_CATEGORIES-1)
+            c_li = np.random.permutation(cfg.FINE_GRAINED_CATEGORIES-1)
+            for k in range(1):
+                b = b_li[k]
+                p = p_li[k]
+                c = c_li[k]
 
                 for i in range(nrow):
-                    bg_code = torch.zeros(
-                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
-                    p_code = torch.zeros(
-                        [self.batch_size, cfg.SUPER_CATEGORIES])
-                    c_code = torch.zeros(
-                        [self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                    bg_code = torch.zeros([self.batch_size, bg_categories])
+                    p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
+                    c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+
+                    # noise.data.normal_(0, 1)
+                    # b = b_li[i]
+                    # p = p_li[i]
                     c = c_li[i]
-                    # c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
                     for j in range(self.batch_size):
                         bg_code[j][b] = 1
                         p_code[j][p] = 1
