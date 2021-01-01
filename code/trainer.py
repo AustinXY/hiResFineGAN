@@ -258,7 +258,7 @@ class FineGAN_trainer(object):
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 1.
+        b_info_wt = 0.
         for i in range(self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
@@ -291,9 +291,10 @@ class FineGAN_trainer(object):
         ch_mk = self.mk_imgs[1]
         ms = fg_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
-        min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
+        # min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
         binary_loss = self.binarization_loss(fg_mk) * 10
         oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
         # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
 
@@ -515,7 +516,9 @@ class FineGAN_evaluator(object):
 
     def evaluate_finegan(self):
         random.seed(datetime.now())
-        torch.manual_seed(random.randint(0, 9999))
+        # torch.manual_seed(random.randint(0, 9999))
+        torch.manual_seed(2)
+
         depth = cfg.TRAIN.START_DEPTH
         res = 32 * 2 ** depth
         if cfg.TRAIN.NET_G == '':
@@ -562,7 +565,6 @@ class FineGAN_evaluator(object):
             p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
             c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
 
-            nrow = 10
             bg_li = []
             pf_li = []
             cf_li = []
@@ -575,12 +577,39 @@ class FineGAN_evaluator(object):
             b_li = np.random.permutation(bg_categories-1)
             p_li = np.random.permutation(cfg.SUPER_CATEGORIES-1)
             c_li = np.random.permutation(cfg.FINE_GRAINED_CATEGORIES-1)
+
+            # b_li = np.array(range(0, bg_categories))
+            # p_c_dict = {0: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            #           1: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+            #           2: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+            #           3: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
+            #           4: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
+            #           5: [50, 51, 52, 53, 54, 55, 56, 57, 58],
+            #           6: [59, 60, 61, 62, 63, 64, 65, 66, 67, 68],
+            #           7: [69, 70, 71, 72, 73, 74, 75, 76, 77, 78],
+            #           8: [79, 80, 81, 82, 83, 84, 85, 86, 87, 88],
+            #           9: [89, 90, 91, 92, 93, 94, 95, 96, 97, 98],
+            #           10: [99, 100, 101, 102, 103, 104, 105, 106, 107],
+            #           11: [108, 109, 110, 111, 112, 113, 114, 115, 116, 117],
+            #           12: [118, 119, 120, 121, 122, 123, 124, 125, 126, 127],
+            #           13: [128, 129, 130, 131, 132, 133, 134, 135, 136, 137],
+            #           14: [138, 139, 140, 141, 142, 143, 144, 145, 146, 147],
+            #           15: [148, 149, 150, 151, 152, 153, 154, 155, 156],
+            #           16: [157, 158, 159, 160, 161, 162, 163, 164, 165, 166],
+            #           17: [167, 168, 169, 170, 171, 172, 173, 174, 175, 176],
+            #           18: [177, 178, 179, 180, 181, 182, 183, 184, 185, 186],
+            #           19: [187, 188, 189, 190, 191, 192, 193, 194, 195]}
+
+            # c_li = p_c_dict[19]
+            # c_li = np.array(range(0, 98))
+            c_li = np.array(range(98, 196))
+            nrow = 10
             for k in range(1):
                 b = b_li[k]
                 p = p_li[k]
                 c = c_li[k]
 
-                for i in range(nrow):
+                for i in range(len(c_li)):
                     bg_code = torch.zeros([self.batch_size, bg_categories])
                     p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
                     c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
@@ -589,6 +618,10 @@ class FineGAN_evaluator(object):
                     # b = b_li[i]
                     # p = p_li[i]
                     c = c_li[i]
+                    b = c % bg_categories
+                    p = int(c // 9.8)
+                    # print('b:', b, 'p:', p, 'c:', c)
+                    # p = i
                     for j in range(self.batch_size):
                         bg_code[j][b] = 1
                         p_code[j][p] = 1
