@@ -11,6 +11,35 @@ import math
 start_depth = cfg.TRAIN.START_DEPTH
 
 
+class PBMatcher(nn.Module):
+    '''
+    Taking p code as input and predict the probability of matching b code
+    '''
+    def __init__(self):
+        super().__init__()
+        self.p_dim = cfg.SUPER_CATEGORIES
+
+        self.define_module()
+
+
+    def define_module(self):
+        pdim = self.p_dim
+        self.predictor = nn.Sequential(
+            nn.Linear(pdim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, cfg.BG_CATEGORIES),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, p_code):
+        b_prob = self.predictor(p_code)
+        return b_prob
+
+
 def weights_init(m):
     classname = m.__class__.__name__
     if isinstance(m, nn.Conv2d):
@@ -48,33 +77,6 @@ def convlxl(in_planes, out_planes):
     return nn.Conv2d(in_planes, out_planes, kernel_size=13, stride=1,
                      padding=1, bias=False)
 
-
-def child_to_parent(c_code):
-    ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
-    pid = (torch.argmax(c_code,  dim=1) // ratio).long()
-    p_code = torch.zeros([c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
-    for i in range(c_code.size(0)):
-        p_code[i][pid[i]] = 1
-    return p_code
-
-def child_to_background(c_code):
-    cid = torch.argmax(c_code,  dim=1)
-    bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-    bid = cid % bg_categories
-    b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
-    for i in range(c_code.size(0)):
-        b_code[i][bid[i]] = 1
-    return b_code
-
-# def parent_to_background(p_code):
-#     pid = torch.argmax(p_code,  dim=1)
-#     bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-#     b_code = torch.zeros([p_code.size(0), bg_categories]).cuda()
-#     for i in range(p_code.size(0)):
-#         b_bin = pid[i] // cfg.NUM_P_PER_B
-#         bid = torch.randint(b_bin * cfg.NUM_B_PER_P, (b_bin+1) * cfg.NUM_B_PER_P, (1,))
-#         b_code[i][bid] = 1
-#     return b_code
 
 # ############## G networks ################################################
 # Upsale the spatial size by a factor of 2
@@ -137,7 +139,7 @@ class INIT_STAGE_G(nn.Module):
         elif self.c_flag == 2:  # child
             self.in_dim = cfg.GAN.Z_DIM + cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            bg_categories = cfg.BG_CATEGORIES
             # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             # print(bg_categories)
             self.in_dim = cfg.GAN.Z_DIM + bg_categories
@@ -180,7 +182,7 @@ class NEXT_STAGE_G_SAME(nn.Module):
         elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            bg_categories = cfg.BG_CATEGORIES
             # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
 
@@ -220,7 +222,7 @@ class NEXT_STAGE_G_UP(nn.Module):
         elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            bg_categories = cfg.BG_CATEGORIES
             # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
 
@@ -350,21 +352,18 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
-
+    def forward(self, z_code, c_code, p_code, bg_code, alpha=None):
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
         mk_imgs = []  # Will contain [parent mask, child mask]
         fg_mk = []  # Will contain [masked parent foreground, masked child foreground]
 
-        if cfg.TIED_CODES:
-            # Obtaining the parent code from child code
-            p_code = child_to_parent(c_code)
-            # bg_code = child_to_background(c_code)
-            bg_code = c_code
-            # bg_code = parent_to_background(p_code)
+        # if cfg.TIED_CODES:
+        #     # Obtaining the parent code from child code
+        # p_code = child_to_parent(c_code)
+        # bg_code, b_prob = self.parent_to_bg(p_code)
 
-        h_code_bg = self.bg_code_init(z_code, bg_code)
+        h_code_bg = self.bg_code_init(z_code, bg_code.detach())
         h_code_p = self.p_code_init(z_code, p_code)
 
         for i in range(self.cur_depth + 1):
@@ -448,7 +447,7 @@ class G_NET(nn.Module):
                 # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
                 # recon_mask = self.recon_net(recon_info)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, bg_code]
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk
 
 def recon_mask_info(fg_attn, fg_mk):
     ms = fg_mk.size()
@@ -570,7 +569,7 @@ class RECON_NET(nn.Module):
         return recon_mask
 
 
-class D_NET_PC_BASE(nn.Module):
+class D_NET_BASE(nn.Module):
     def __init__(self, stg_no, ndf):
         super().__init__()
         self.df_dim = ndf
@@ -579,10 +578,14 @@ class D_NET_PC_BASE(nn.Module):
             self.ef_dim = cfg.SUPER_CATEGORIES
         elif self.stg_no == 2:
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
-        else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+        elif self.stg_no == 0:
+            bg_categories = cfg.BG_CATEGORIES
             # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
             self.ef_dim = bg_categories
+        else:  # p, b pair evaluator
+            print('stage number error')
+            sys.exit(0)
+            self.ef_dim = 0
 
         self.define_module()
 
@@ -594,47 +597,41 @@ class D_NET_PC_BASE(nn.Module):
         self.downblock2 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
         self.downblock3 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
         # self.conv = Block3x3_leakRelu(ndf, ndf * 2)
-        self.logits = nn.Sequential(
-            nn.Conv2d(ndf * 2, efg, kernel_size=4, stride=4))
-        self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
         self.uncond_logits = nn.Sequential(
             nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4),
             nn.Sigmoid())
+        if efg != 0:
+            self.logits = nn.Sequential(
+                nn.Conv2d(ndf * 2, efg, kernel_size=4, stride=4))
+            self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
 
     def forward(self, x_code):
         x_code = self.downblock1(x_code)  # 512 * 16 * 16
         x_code = self.downblock2(x_code)  # 512 * 8 * 8
         x_code = self.downblock3(x_code)  # 512 * 4 * 4
         # x_code = self.conv(x_code)
-        h_c_code = self.jointConv(x_code)
-        # Predicts the parent code and child code in parent and child stage respectively
-        code_pred = self.logits(h_c_code)
-        # This score is not used in parent stage while training
         rf_score = self.uncond_logits(x_code)
-        return [code_pred.view(-1, self.ef_dim), rf_score.view(-1)]
+        if self.ef_dim != 0:
+            h_c_code = self.jointConv(x_code)
+            # Predicts the parent code and child code in parent and child stage respectively
+            code_pred = self.logits(h_c_code)
+            # This score is not used in parent stage while training
+            return [code_pred.view(-1, self.ef_dim), rf_score.view(-1)]
+        return [None, rf_score.view(-1)]
 
 
-class D_NET_PC(nn.Module):
+
+class D_NET(nn.Module):
     def __init__(self, stg_no):
         super().__init__()
         self.df_dim = 256
         self.stg_no = stg_no
-        if self.stg_no == 1:
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif self.stg_no == 2:
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
-        else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            self.ef_dim = bg_categories
         self.define_module()
 
     def define_module(self):
         ndf = self.df_dim
-        efg = self.ef_dim
-
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
-        self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
+        self.down_net = nn.ModuleList([D_NET_BASE(self.stg_no, ndf)])
         ndf = ndf // 2
 
         for _ in range(start_depth):

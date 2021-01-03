@@ -9,26 +9,32 @@ WORKERS: 4
 
 SUPER_CATEGORIES: 20   # For CUB
 FINE_GRAINED_CATEGORIES: 196  # For CUB
+BG_CATEGORIES: 30
 # FINE_GRAINED_CATEGORIES: 200  # For CUB
 # BG_CATEGORIES: 200
 # NUM_B_PER_P: 10  # b/p
 # NUM_P_PER_B: 2   # p/b
-NUM_C_PER_B: 1   # c/b
+# NUM_C_PER_B: 1   # c/b
 
 TIED_CODES: True   # Do NOT change this to False during training.
 
 TRAIN:
     FLAG: True
-    NET_G: ''  # Specify the generator path to resume training
-    NET_D: ''  # Specify the discriminator path to resume training
+    NET_G: ''
+    NET_D: ''
+    MATCHER: ''
+    # NET_G: '../output/car_2021_01_02_23_51_16/Model/netG_10000_depth2.pth'
+    # NET_D: '../output/car_2021_01_02_23_51_16/Model/netD'
+    # MATCHER: '../output/car_2021_01_02_23_51_16/Model/matcher_depth2.pth'
+
     MAX_EPOCH: 600
     HARDNEG_MAX_ITER: 1500
-    SNAPSHOT_INTERVAL: 1000
-    SAVEMODEL_INTERVAL: 100000
+    SNAPSHOT_INTERVAL: 500
+    SAVEMODEL_INTERVAL: 10000
     SNAPSHOT_INTERVAL_HARDNEG: 500
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
-    MIN_FG_CVG: 0.1
+    MIN_FG_CVG: 0.3
     # MIN_BG_CVG: 0.1
 
     START_DEPTH: 2 # 32 has depth 0; should match loaded model depth

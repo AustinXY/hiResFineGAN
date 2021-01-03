@@ -28,7 +28,7 @@ import torchvision.transforms as transforms
 from datetime import datetime
 
 
-from model import G_NET, D_NET_PC
+from model import G_NET, D_NET, PBMatcher
 
 
 start_depth = cfg.TRAIN.START_DEPTH
@@ -39,10 +39,10 @@ stable_epochs_per_depth = cfg.TRAIN.STABLE_EPOCHS_PER_DEPTH
 
 # ################## Shared functions ###################
 
-def child_to_parent(child_c_code, classes_child, classes_parent):
-    ratio = classes_child / classes_parent
+def child_to_parent(child_c_code):
+    ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
     arg_parent = torch.argmax(child_c_code,  dim = 1) / ratio
-    parent_c_code = torch.zeros([child_c_code.size(0), classes_parent]).cuda()
+    parent_c_code = torch.zeros([child_c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
     for i in range(child_c_code.size(0)):
         parent_c_code[i][arg_parent[i].type(torch.LongTensor)] = 1
     return parent_c_code
@@ -72,20 +72,25 @@ def copy_G_params(model):
     flatten = deepcopy(list(p.data for p in model.parameters()))
     return flatten
 
-def load_network(gpus):
+def load_network(gpus, load_D=True):
+    matcher = PBMatcher()
+    matcher.apply(weights_init)
+    matcher = torch.nn.DataParallel(matcher, device_ids=gpus)
+
     netG = G_NET()
     netG.apply(weights_init)
     netG = torch.nn.DataParallel(netG, device_ids=gpus)
     # print(netG)
 
     netsD = []
-    netsD.append(D_NET_PC(0))
-    netsD.append(D_NET_PC(1))
-    netsD.append(D_NET_PC(2))
+    if load_D:
+        netsD.append(D_NET(0))
+        netsD.append(D_NET(1))
+        netsD.append(D_NET(2))
 
-    for i in range(len(netsD)):
-        netsD[i].apply(weights_init)
-        netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
+        for i in range(len(netsD)):
+            netsD[i].apply(weights_init)
+            netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
         # print(netsD[i])
 
     count = 0
@@ -103,21 +108,32 @@ def load_network(gpus):
         iend = cfg.TRAIN.NET_G.rfind('.')
         _depth = cfg.TRAIN.NET_G[istart:iend]
 
-    if cfg.TRAIN.NET_D != '':
-        for i in range(len(netsD)):
-            print('Load %s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
-            state_dict = torch.load('%s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
-            netsD[i].load_state_dict(state_dict)
+    if load_D:
+        if cfg.TRAIN.NET_D != '':
+            for i in range(len(netsD)):
+                print('Load %s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
+                state_dict = torch.load('%s%d_%s.pth' % (cfg.TRAIN.NET_D, i, _depth))
+                netsD[i].load_state_dict(state_dict)
+
+    if cfg.TRAIN.MATCHER != '':
+        print('Load ', cfg.TRAIN.MATCHER)
+        state_dict = torch.load(cfg.TRAIN.MATCHER)
+        matcher.load_state_dict(state_dict)
 
     if cfg.CUDA:
+        matcher.cuda()
         netG.cuda()
         for i in range(len(netsD)):
             netsD[i].cuda()
 
-    return netG, netsD, len(netsD), count
+    return netG, netsD, matcher, count
 
 
-def define_optimizers(netG, netsD):
+def define_optimizers(netG, netsD, matcher):
+    opt_matcher = optim.Adam(matcher.parameters(),
+                            lr=1e-4,
+                            betas=(0.5, 0.999))
+
     optimizersD = []
     # num_Ds = len(netsD)
     # for i in range(num_Ds):
@@ -147,10 +163,10 @@ def define_optimizers(netG, netsD):
                      betas=(0.5, 0.999))
     optimizerG.append(opt)
 
-    return optimizerG, optimizersD
+    return optimizerG, optimizersD, opt_matcher
 
 
-def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
+def save_model(netG, avg_param_G, netsD, matcher, epoch, model_dir, cur_depth):
     load_params(netG, avg_param_G)
     torch.save(
         netG.state_dict(),
@@ -159,6 +175,9 @@ def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
         netD = netsD[i]
         torch.save(netD.state_dict(),
             '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
+
+    torch.save(matcher.state_dict(),
+            '%s/matcher_depth%d.pth' % (model_dir, cur_depth))
     print('Save G/Ds models.')
 
 
@@ -208,18 +227,17 @@ class FineGAN_trainer(object):
         return real_vcimgs, vc_code
 
 
-    def train_Dnet(self, idx, count):
+    def train_Dnet(self, count):
         flag = count % 100
-        criterion, criterion_one = self.criterion, self.criterion_one
+        criterion_one = self.criterion_one
 
-        netD, optD = self.netsD[idx], self.optimizersD[0]
+        netD, optD = self.netsD[2], self.optimizersD[0]
 
         real_imgs = self.real_cimgs
-        masks = None
 
-        fake_imgs = self.fake_imgs[idx]
+        fake_imgs = self.fake_imgs[2]
         netD.zero_grad()
-        real_logits = netD(real_imgs, self.alpha, masks)
+        real_logits = netD(real_imgs, self.alpha)
 
         fake_labels = torch.zeros_like(real_logits[1])
         real_labels = torch.ones_like(real_logits[1])
@@ -234,19 +252,20 @@ class FineGAN_trainer(object):
         optD.step()
 
         if flag == 0:
-            summary_D = summary.scalar('D_loss%d' % idx, errD.item())
+            summary_D = summary.scalar('D_loss%d' % 2, errD.item())
             self.summary_writer.add_summary(summary_D, count)
-            summary_D_real = summary.scalar('D_loss_real_%d' % idx, errD_real.item())
+            summary_D_real = summary.scalar('D_loss_real_%d' % 2, errD_real.item())
             self.summary_writer.add_summary(summary_D_real, count)
-            summary_D_fake = summary.scalar('D_loss_fake_%d' % idx, errD_fake.item())
+            summary_D_fake = summary.scalar('D_loss_fake_%d' % 2, errD_fake.item())
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
 
+
     def train_Gnet(self, count):
         self.netG.zero_grad()
-        for myit in range(len(self.netsD)):
-             self.netsD[myit].zero_grad()
+        for i in range(len(self.netsD)):
+             self.netsD[i].zero_grad()
 
         errG_total = 0
         flag = count % 100
@@ -258,8 +277,8 @@ class FineGAN_trainer(object):
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 0.
-        for i in range(self.num_Ds):
+        b_info_wt = 1.
+        for i in range(len(self.netsD)):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
                 real_labels = torch.ones_like(outputs[1])
@@ -292,7 +311,7 @@ class FineGAN_trainer(object):
         ms = fg_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
         # min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
-        binary_loss = self.binarization_loss(fg_mk) * 10
+        binary_loss = self.binarization_loss(fg_mk) * 1e1
         oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
         # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
@@ -308,6 +327,91 @@ class FineGAN_trainer(object):
         for myit in range(3):
             self.optimizerG[myit].step()
         return errG_total
+
+
+    def train_matcher(self, count):
+        # default_bump = 1e-7
+        default_bump_thrld = 0.3
+
+        self.opt_matcher.zero_grad()
+
+        b_prob = self.b_prob
+        pid = torch.argmax(self.p_code,  dim=-1)
+        bid = torch.argmax(self.b_code,  dim=-1)
+        bid_front = torch.argmax(self.b_code_front,  dim=-1)
+        bid_back = torch.argmax(self.b_code_back,  dim=-1)
+
+        evaluator = self.netsD[2]
+
+        fake_imgs = self.fake_imgs[2]
+        fake_imgs_front = self.fake_imgs_front[2]
+        fake_imgs_back = self.fake_imgs_back[2]
+
+        errG_total = 0
+
+        with torch.no_grad():
+            eval = evaluator(fake_imgs, self.alpha)[1]
+            eval_front = evaluator(fake_imgs_front, self.alpha)[1]
+            eval_back = evaluator(fake_imgs_back, self.alpha)[1]
+
+        # front_cmp = (F.relu(eval - eval_front))**2
+        # back_cmp = (F.relu(eval_back - eval))**2
+
+        # print(eval)
+        # print(eval_front)
+        # print(eval_back)
+
+        # print(front_cmp)
+        # print(back_cmp)
+
+        temp_mat = torch.zeros_like(self.b_prob)
+        for i in range(temp_mat.size(0)):
+            v = self.pb_eval_update(pid[i], bid[i], eval[i])
+            vf = self.pb_eval_update(pid[i], bid_front[i], eval_front[i])
+            vb = self.pb_eval_update(pid[i], bid_back[i], eval_back[i])
+
+            default_bump = (F.relu(default_bump_thrld - self.selected_b_prob[i]))**2 * 1e-4
+            temp_mat[i][bid[i]] = -default_bump - F.relu(v - vf) + F.relu(vb - v)
+            # temp_mat[i][bid_front[i]] = front_cmp[i]
+            # temp_mat[i][bid_back[i]] = -back_cmp[i]
+
+        matcher_loss = torch.sum(temp_mat * b_prob) * 1e-2
+
+        # matcher_loss.backward()
+
+        # print(self.matcher.module.predictor[-2].weight.grad)
+
+        errG_total += matcher_loss
+
+        if count % 100 == 0:
+            summary_D = summary.scalar('Matcher_loss', matcher_loss.item())
+            self.summary_writer.add_summary(summary_D, count)
+
+        # matching sparcity loss: don't want too many p to match to same b
+        batch_prob = torch.zeros(b_prob.size(1)).cuda()
+        p_li = []
+        for i in range(b_prob.size(0)):
+            if pid[i] not in p_li:
+                p_li.append(pid[i])
+                batch_prob += b_prob[i]
+
+            # if pid[i] == 0:
+            #     self.p0_prob = b_prob[i]
+            #     for j in range(cfg.BG_CATEGORIES):
+            #         summary_D = summary.scalar('p0_b%d_prob' % j, b_prob[i][j].item())
+            #         self.summary_writer.add_summary(summary_D, count)
+
+        target = torch.ones_like(batch_prob) * (0.6)
+        sparsity_loss = torch.sum(F.relu(batch_prob - target)) * 1e-6
+
+        errG_total += sparsity_loss
+
+        self.sl = sparsity_loss
+        self.ml = matcher_loss
+
+        errG_total.backward()
+        self.opt_matcher.step()
+        return matcher_loss
 
     def concentration_loss(self, fg_mk, bg_mk):
         eps = 1e-12
@@ -349,19 +453,97 @@ class FineGAN_trainer(object):
         self.yc = yc.unsqueeze(0).unsqueeze(0).repeat(bs, 1, 1, 1).float().cuda()
         return dataloader
 
+    def parent_to_bg(self, p_code, cmp_rank=None):
+        '''
+        input:
+        cmp_rank: compatibility rank, should be within [0, cfg.BG_CATEGORIES-1]
+                  if it is not none, return b_code of the given rank
+
+        output:
+        b_code: sampled b_code
+        b_code_front: b_code with larger b_prob
+        b_code_back: b_code with smaller b_prob
+        '''
+
+        b_prob = self.matcher(p_code)
+        b_code = torch.zeros([p_code.size(0), cfg.BG_CATEGORIES]).cuda()
+        sorted_b_prob, sorted_bid = torch.sort(b_prob, dim=-1, descending=True)
+
+        self.max_b_prob = sorted_b_prob[:, 0].detach()
+
+        if cmp_rank is not None:
+            for i in range(p_code.size(0)):
+                max_bid = sorted_bid[i][cmp_rank]
+                b_code[i][max_bid] = 1
+
+            return b_code, sorted_b_prob[:, cmp_rank], None, None, None
+
+
+        b_code_front = torch.zeros_like(b_code)
+        b_code_back = torch.zeros_like(b_code)
+        selected_b_prob = torch.zeros(p_code.size(0)).cuda()
+
+        b_prob_acc = sorted_b_prob
+        # accumulate probability
+        for i in range(1, b_prob_acc.size(1)):
+            b_prob_acc[:, i] = b_prob_acc[:, i-1] + b_prob_acc[:, i]
+
+        rnd = torch.rand((p_code.size(0), 1)).cuda()
+        for i in range(p_code.size(0)):
+            _bid = torch.nonzero(b_prob_acc[i] >= rnd[i], as_tuple=True)[0][0]
+            _bid_front = _bid - 1
+            if _bid_front < 0:
+                _bid_front = 0
+            _bid_back = _bid + 1
+            if _bid_back > cfg.BG_CATEGORIES-1:
+                _bid_back = cfg.BG_CATEGORIES-1
+
+            bid = sorted_bid[i][_bid]
+            bid_front = sorted_bid[i][_bid_front]
+            bid_back = sorted_bid[i][_bid_back]
+
+            b_code[i][bid] = 1
+            b_code_front[i][bid_front] = 1
+            b_code_back[i][bid_back] = 1
+
+            selected_b_prob[i] = b_prob[i][bid]
+
+        return b_code, selected_b_prob, b_code_front, b_code_back, b_prob
+
+    def pb_eval_update(self, _pid, _bid, eval):
+        pid = _pid.item()
+        bid = _bid.item()
+        old = self.pb_eval_record[pid][bid][0].pop(0)
+        self.pb_eval_record[pid][bid][1] += eval - old
+        self.pb_eval_record[pid][bid][0].append(eval)
+        return self.pb_eval_record[pid][bid][1] / self.record_len
+
+    # def pb_eval(self, pid, bid):
+    #     return self.pb_eval_record[pid][bid][1] / self.record_len
+
     def train(self):
-        self.netG, self.netsD, self.num_Ds, start_count = load_network(self.gpus)
+        self.netG, self.netsD, self.matcher, start_count = load_network(self.gpus)
         newly_loaded = True
         avg_param_G = copy_G_params(self.netG)
 
-        self.optimizerG, self.optimizersD = \
-            define_optimizers(self.netG, self.netsD)
+        self.optimizerG, self.optimizersD, self.opt_matcher = \
+            define_optimizers(self.netG, self.netsD, self.matcher)
 
         self.criterion = nn.BCELoss(reduce=False)
         self.criterion_one = nn.BCELoss()
         self.criterion_class = nn.CrossEntropyLoss()
 
         nz = cfg.GAN.Z_DIM
+
+        self.p0_prob = None
+
+        self.record_len = 20
+        self.pb_eval_record = {}
+        for pid in range(cfg.SUPER_CATEGORIES):
+            self.pb_eval_record[pid] = {}
+            for bid in range(cfg.BG_CATEGORIES):
+                self.pb_eval_record[pid][bid] = [[0.] * self.record_len, 0.]
+
 
         if cfg.CUDA:
             self.criterion.cuda()
@@ -388,7 +570,6 @@ class FineGAN_trainer(object):
 
             start_epoch = start_count // (num_batches)
             start_count = 0
-            self.beta = 0
 
             for epoch in range(start_epoch, max_epoch):
                 depth_ep_ctr += 1
@@ -402,46 +583,56 @@ class FineGAN_trainer(object):
                 start_t = time.time()
                 for step, data in enumerate(dataloader, 0):
 
-                    # _travel = 5000.0
-                    # if count < _travel:
-                    #     self.beta = count / _travel
-                    # else:
-                    #     self.beta = 1
-                    self.beta = 1
-
                     count += 1
                     self.real_cimgs, self.c_code = self.prepare_data(data)
 
+                    # Obtain the parent code given the child code
+                    self.p_code = child_to_parent(self.c_code)
+                    self.b_code, self.selected_b_prob, self.b_code_front, self.b_code_back, self.b_prob = self.parent_to_bg(self.p_code)
+
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, pb_code = self.netG(noise, self.c_code, self.alpha, self.beta)
-
-                    self.p_code, self.b_code = pb_code
-
-                    # Obtain the parent code given the child code
-                    # self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk = self.netG(noise, self.c_code, self.p_code, self.b_code, self.alpha)
 
                     # Update Discriminator networks
-                    errD_total = self.train_Dnet(2, count)
+                    errD_total = self.train_Dnet(count)
 
                     # Update the Generator networks
                     errG_total = self.train_Gnet(count)
                     for p, avg_p in zip(self.netG.parameters(), avg_param_G):
                         avg_p.mul_(0.999).add_(0.001, p.data)
 
+                    with torch.no_grad():
+                        self.fake_imgs, _, _, _ = self.netG(noise, self.c_code, self.p_code, self.b_code, self.alpha)
+                        self.fake_imgs_front, _, _, _ = self.netG(noise, self.c_code, self.p_code, self.b_code_front, self.alpha)
+                        self.fake_imgs_back, _, _, _ = self.netG(noise, self.c_code, self.p_code, self.b_code_back, self.alpha)
+
+                    self.train_matcher(count)
+
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, cvg_loss: {}, oob_loss: {}".
-                              format(self.bl.item(), self.cl.item(), self.ol.item()))
+                        print("max probs: {}\nsparsity loss: {}, matcher loss: {}".
+                              format(self.max_b_prob, self.sl.item(), self.ml.item()))
+                        if self.p0_prob is not None:
+                            print(self.p0_prob)
+                        # print("binary_loss: {}, cvg_loss: {}, oob_loss: {}".
+                        #       format(self.bl.item(), self.cl.item(), self.ol.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
-                            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+                            save_model(self.netG, avg_param_G, self.netsD, self.matcher, count, self.model_dir, cur_depth)
                         # Save images
                         load_params(self.netG, avg_param_G)
 
-                        fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, self.alpha)
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
+                        b_code, _, _, _, _ = self.parent_to_bg(self.p_code, cmp_rank=0)
+
+                        fake_imgs, fg_imgs, mk_imgs, fg_mk = self.netG(
+                            fixed_noise, self.c_code, self.p_code, b_code, self.alpha)
+
+                        bg_img = fake_imgs[0]
+                        bg_mask = torch.ones_like(mk_imgs[0]) - mk_imgs[0]
+                        bg_of_bg = bg_mask * bg_img
+                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [bg_of_bg]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
@@ -453,7 +644,7 @@ class FineGAN_trainer(object):
                         end_t - start_t))
 
             if not newly_loaded:
-                save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+                save_model(self.netG, avg_param_G, self.netsD, self.matcher, count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
 
@@ -514,10 +705,40 @@ class FineGAN_evaluator(object):
         cudnn.benchmark = True
         self.batch_size = cfg.TRAIN.BATCH_SIZE * self.num_gpus
 
+    def parent_to_bg(self, p_code, sample_by_prob=True):
+        b_prob = self.matcher(p_code)
+        b_code = torch.zeros([p_code.size(0), cfg.BG_CATEGORIES]).cuda()
+
+        if not sample_by_prob:
+            sorted_b_prob, idx = torch.sort(b_prob, dim=-1, descending=True)
+            selected_prob = sorted_b_prob[:, 0]
+            max_prob_bid = idx[:, 0]
+            for i in range(p_code.size(0)):
+                bid = max_prob_bid[i]
+                b_code[i][bid] = 1
+
+        else:
+            b_prob_acc = b_prob.clone()
+            selected_prob = torch.zeros(p_code.size(0)).cuda()
+
+            # accumulate probability
+            for i in range(1, b_prob_acc.size(1)):
+                b_prob_acc[:, i] = b_prob_acc[:, i-1] + b_prob_acc[:, i]
+
+            rnd = torch.rand((p_code.size(0), 1)).cuda()
+            # print(rnd)
+            for i in range(p_code.size(0)):
+                bid = torch.nonzero(
+                    b_prob_acc[i] >= rnd[i], as_tuple=True)[0][0]
+                b_code[i][bid] = 1
+                selected_prob[i] = b_prob[i][bid]
+
+        return b_code, selected_prob, b_prob
+
     def evaluate_finegan(self):
         random.seed(datetime.now())
-        # torch.manual_seed(random.randint(0, 9999))
-        torch.manual_seed(2)
+        torch.manual_seed(random.randint(0, 9999))
+        # torch.manual_seed(2)
 
         depth = cfg.TRAIN.START_DEPTH
         res = 32 * 2 ** depth
@@ -525,22 +746,24 @@ class FineGAN_evaluator(object):
             print('Error: the path for model not found!')
         else:
             # Build and load the generator
-            netG = G_NET()
+            netG, netsD, self.matcher, evaluator, _ = load_network(
+                self.gpus, load_D=False)
+            # netG = G_NET()
             # print(netG)
-            netG.apply(weights_init)
-            netG = torch.nn.DataParallel(netG, device_ids=self.gpus)
-            model_dict = netG.state_dict()
+            # netG.apply(weights_init)
+            # netG = torch.nn.DataParallel(netG, device_ids=self.gpus)
+            # model_dict = netG.state_dict()
 
-            state_dict = \
-                torch.load(cfg.TRAIN.NET_G,
-                           map_location=lambda storage, loc: storage)
+            # state_dict = \
+            #     torch.load(cfg.TRAIN.NET_G,
+            #                map_location=lambda storage, loc: storage)
 
-            state_dict = {k: v for k, v in state_dict.items()
-                          if k in model_dict}
+            # state_dict = {k: v for k, v in state_dict.items()
+            #               if k in model_dict}
 
-            model_dict.update(state_dict)
-            netG.load_state_dict(model_dict)
-            print('Load ', cfg.TRAIN.NET_G)
+            # model_dict.update(state_dict)
+            # netG.load_state_dict(model_dict)
+            # print('Load ', cfg.TRAIN.NET_G)
 
             # Uncomment this to print Generator layers
             # print(netG)
@@ -549,21 +772,22 @@ class FineGAN_evaluator(object):
             noise = torch.FloatTensor(1, nz)
 
             noise.data.normal_(0, 1)
-            noise = noise.repeat(self.batch_size, 1)
+            # noise = noise.repeat(1, 1)
 
             if cfg.CUDA:
                 netG.cuda()
                 noise = noise.cuda()
 
             netG.eval()
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+            self.matcher.eval()
+            evaluator.eval()
 
-            b = random.randint(0, bg_categories-1)
+            b = random.randint(0, cfg.BG_CATEGORIES-1)
             p = random.randint(0, cfg.SUPER_CATEGORIES-1)
             c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
-            bg_code = torch.zeros([self.batch_size, bg_categories])
-            p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
-            c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+            b_code = torch.zeros([1, cfg.BG_CATEGORIES])
+            p_code = torch.zeros([1, cfg.SUPER_CATEGORIES])
+            c_code = torch.zeros([1, cfg.FINE_GRAINED_CATEGORIES])
 
             bg_li = []
             pf_li = []
@@ -574,61 +798,70 @@ class FineGAN_evaluator(object):
             cfg_li = []
             pfgmk_li = []
             cfgmk_li = []
-            b_li = np.random.permutation(bg_categories-1)
-            p_li = np.random.permutation(cfg.SUPER_CATEGORIES-1)
-            c_li = np.random.permutation(cfg.FINE_GRAINED_CATEGORIES-1)
-
-            # b_li = np.array(range(0, bg_categories))
-            # p_c_dict = {0: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            #           1: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-            #           2: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
-            #           3: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-            #           4: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
-            #           5: [50, 51, 52, 53, 54, 55, 56, 57, 58],
-            #           6: [59, 60, 61, 62, 63, 64, 65, 66, 67, 68],
-            #           7: [69, 70, 71, 72, 73, 74, 75, 76, 77, 78],
-            #           8: [79, 80, 81, 82, 83, 84, 85, 86, 87, 88],
-            #           9: [89, 90, 91, 92, 93, 94, 95, 96, 97, 98],
-            #           10: [99, 100, 101, 102, 103, 104, 105, 106, 107],
-            #           11: [108, 109, 110, 111, 112, 113, 114, 115, 116, 117],
-            #           12: [118, 119, 120, 121, 122, 123, 124, 125, 126, 127],
-            #           13: [128, 129, 130, 131, 132, 133, 134, 135, 136, 137],
-            #           14: [138, 139, 140, 141, 142, 143, 144, 145, 146, 147],
-            #           15: [148, 149, 150, 151, 152, 153, 154, 155, 156],
-            #           16: [157, 158, 159, 160, 161, 162, 163, 164, 165, 166],
-            #           17: [167, 168, 169, 170, 171, 172, 173, 174, 175, 176],
-            #           18: [177, 178, 179, 180, 181, 182, 183, 184, 185, 186],
-            #           19: [187, 188, 189, 190, 191, 192, 193, 194, 195]}
+            # b_li = np.random.permutation(cfg.BG_CATEGORIES-1)
+            # p_li = np.random.permutation(cfg.SUPER_CATEGORIES-1)
+            # c_li = np.random.permutation(cfg.FINE_GRAINED_CATEGORIES-1)
 
             # c_li = p_c_dict[19]
             # c_li = np.array(range(0, 98))
-            c_li = np.array(range(98, 196))
+            c_li = [0, 50]
+            p_li = list(range(0, 20))
+            b_li = [0]
+
+            tie_code = False
+
+            if tie_code:
+                l = len(c_li)
+            else:
+                l = max(len(c_li), len(p_li), len(b_li))
+
             nrow = 10
             for k in range(1):
                 b = b_li[k]
                 p = p_li[k]
                 c = c_li[k]
 
-                for i in range(len(c_li)):
-                    bg_code = torch.zeros([self.batch_size, bg_categories])
-                    p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
-                    c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
+                for i in range(l):
 
                     # noise.data.normal_(0, 1)
-                    # b = b_li[i]
-                    # p = p_li[i]
-                    c = c_li[i]
-                    b = c % bg_categories
-                    p = int(c // 9.8)
-                    # print('b:', b, 'p:', p, 'c:', c)
-                    # p = i
-                    for j in range(self.batch_size):
-                        bg_code[j][b] = 1
-                        p_code[j][p] = 1
-                        c_code[j][c] = 1
 
-                    fake_imgs, fg_imgs, mk_imgs, fgmk_imgs, _ = netG(
-                        noise, c_code, None, p_code, bg_code)  # Forward pass through the generator
+                    if tie_code:
+                        c_code = torch.zeros([1, cfg.FINE_GRAINED_CATEGORIES])
+                        c = c_li[i]
+                        c_code[0][c] = 1
+
+                        p_code = child_to_parent(c_code)
+                        p = torch.argmax(p_code,  dim=-1).item()
+
+                        b_code, selected_prob, b_prob = self.parent_to_bg(p_code)
+                        max_b_code, max_b_prob, _ = self.parent_to_bg(p_code, sample_by_prob=False)
+
+                        b = torch.argmax(b_code,  dim=-1).item()
+                        b_code = max_b_code
+                    else:
+                        # b = b_li[i]
+                        p = p_li[i]
+                        # c = c_li[i]
+
+                        b_code = torch.zeros([1, cfg.BG_CATEGORIES])
+                        p_code = torch.zeros([1, cfg.SUPER_CATEGORIES])
+                        c_code = torch.zeros([1, cfg.FINE_GRAINED_CATEGORIES])
+
+                        c_code[0][c] = 1
+                        p_code[0][p] = 1
+                        b_code[0][b] = 1
+
+                    # sorted_b_prob, idx = torch.sort(b_prob, dim=-1, descending=True)
+
+                    # print('c: {}, p: {}, b: {}'.format(c, p, b))
+
+                    # print(sorted_b_prob[0][0:5])
+                    # print(idx[0][0:5])
+
+                    # sys.exit(0)
+
+                    fake_imgs, fg_imgs, mk_imgs, fgmk_imgs = netG(
+                        noise, c_code, p_code, b_code)  # Forward pass through the generator
                     bg_li.append(fake_imgs[0][0])
                     pf_li.append(fake_imgs[1][0])
                     cf_li.append(fake_imgs[2][0])
