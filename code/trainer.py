@@ -258,7 +258,7 @@ class FineGAN_trainer(object):
 
         p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 0.
+        b_info_wt = 1.
         for i in range(self.num_Ds):
             if i == 2:  # real/fake loss for background (0) and child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], self.alpha)
@@ -273,7 +273,7 @@ class FineGAN_trainer(object):
                 pred_c = self.netsD[i](self.fg_mk[1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1]) * c_info_wt
             else: # Mutual information loss for the bg stage (0)
-                pred_b = self.netsD[i](bg_of_bg, self.alpha)
+                pred_b = self.netsD[i](bg_img, self.alpha)
                 errG_info = criterion_class(pred_b[0], torch.nonzero(b_code.long())[:,1]) * b_info_wt
 
             errG_total = errG_total + errG_info

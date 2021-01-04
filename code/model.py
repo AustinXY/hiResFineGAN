@@ -66,6 +66,15 @@ def child_to_background(c_code):
         b_code[i][bid[i]] = 1
     return b_code
 
+def child_to_background_rand_b(c_code):
+    # cid = torch.argmax(c_code,  dim=1)
+    bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+    b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
+    for i in range(c_code.size(0)):
+        bid = torch.randint(0, bg_categories-1, ())
+        b_code[i][bid] = 1
+    return b_code
+
 # def parent_to_background(p_code):
 #     pid = torch.argmax(p_code,  dim=1)
 #     bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
@@ -361,7 +370,9 @@ class G_NET(nn.Module):
             # Obtaining the parent code from child code
             p_code = child_to_parent(c_code)
             # bg_code = child_to_background(c_code)
-            bg_code = c_code
+            bg_code = child_to_background_rand_b(c_code)
+
+            # bg_code = c_code
             # bg_code = parent_to_background(p_code)
 
         h_code_bg = self.bg_code_init(z_code, bg_code)

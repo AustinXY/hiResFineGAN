@@ -13,7 +13,8 @@ FINE_GRAINED_CATEGORIES: 196  # For CUB
 # BG_CATEGORIES: 200
 # NUM_B_PER_P: 10  # b/p
 # NUM_P_PER_B: 2   # p/b
-NUM_C_PER_B: 1   # c/b
+# NUM_C_PER_B: 1   # c/b
+NUM_C_PER_B: 10   # c/b
 
 TIED_CODES: True   # Do NOT change this to False during training.
 
