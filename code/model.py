@@ -52,6 +52,8 @@ def convlxl(in_planes, out_planes):
 def child_to_parent(c_code):
     ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
     pid = (torch.argmax(c_code,  dim=1) // ratio).long()
+    # print(torch.argmax(c_code,  dim=1))
+    # print(pid)
     p_code = torch.zeros([c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
     for i in range(c_code.size(0)):
         p_code[i][pid[i]] = 1
@@ -60,20 +62,23 @@ def child_to_parent(c_code):
 def child_to_background(c_code):
     cid = torch.argmax(c_code,  dim=1)
     bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+    # print(bg_categories)
     bid = cid % bg_categories
+    # print(bid)
+    # sys.exit(0)
     b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
     for i in range(c_code.size(0)):
         b_code[i][bid[i]] = 1
     return b_code
 
-def child_to_background_rand_b(c_code):
-    # cid = torch.argmax(c_code,  dim=1)
-    bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-    b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
-    for i in range(c_code.size(0)):
-        bid = torch.randint(0, bg_categories-1, ())
-        b_code[i][bid] = 1
-    return b_code
+# def child_to_background_rand_b(c_code):
+#     # cid = torch.argmax(c_code,  dim=1)
+#     bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+#     b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
+#     for i in range(c_code.size(0)):
+#         bid = torch.randint(0, bg_categories-1, ())
+#         b_code[i][bid] = 1
+#     return b_code
 
 # def parent_to_background(p_code):
 #     pid = torch.argmax(p_code,  dim=1)
@@ -369,8 +374,9 @@ class G_NET(nn.Module):
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
             p_code = child_to_parent(c_code)
-            # bg_code = child_to_background(c_code)
-            bg_code = child_to_background_rand_b(c_code)
+            bg_code = child_to_background(c_code)
+            # bg_code = p_code
+            # bg_code = child_to_background_rand_b(c_code)
 
             # bg_code = c_code
             # bg_code = parent_to_background(p_code)
