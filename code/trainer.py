@@ -273,7 +273,7 @@ class FineGAN_trainer(object):
                 pred_c = self.netsD[i](self.fg_mk[1], self.alpha)
                 errG_info = criterion_class(pred_c[0], torch.nonzero(c_code.long())[:,1]) * c_info_wt
             else: # Mutual information loss for the bg stage (0)
-                pred_b = self.netsD[i](bg_img, self.alpha)
+                pred_b = self.netsD[i](bg_of_bg, self.alpha)
                 errG_info = criterion_class(pred_b[0], torch.nonzero(b_code.long())[:,1]) * b_info_wt
 
             errG_total = errG_total + errG_info
@@ -292,7 +292,7 @@ class FineGAN_trainer(object):
         ms = fg_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
         # min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
-        binary_loss = self.binarization_loss(fg_mk) * 10
+        binary_loss = self.binarization_loss(fg_mk) * 1e1
         oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
         # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
@@ -402,19 +402,12 @@ class FineGAN_trainer(object):
                 start_t = time.time()
                 for step, data in enumerate(dataloader, 0):
 
-                    # _travel = 5000.0
-                    # if count < _travel:
-                    #     self.beta = count / _travel
-                    # else:
-                    #     self.beta = 1
-                    self.beta = 1
-
                     count += 1
                     self.real_cimgs, self.c_code = self.prepare_data(data)
 
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, pb_code = self.netG(noise, self.c_code, self.alpha, self.beta)
+                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, pb_code = self.netG(noise, self.c_code, self.alpha)
 
                     self.p_code, self.b_code = pb_code
 
