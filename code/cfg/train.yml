@@ -1,5 +1,5 @@
 CONFIG_NAME: '3stages'
-DATASET_NAME: 'stanford-car'
+DATASET_NAME: 'car'
 DATA_DIR: '../../data/cars'
 SAVE_DIR: '../output/vis'
 GPU_ID: '1'
