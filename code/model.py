@@ -51,7 +51,8 @@ def convlxl(in_planes, out_planes):
 
 def child_to_parent(c_code):
     ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
-    pid = (torch.argmax(c_code,  dim=1) // ratio).long()
+    cid = torch.argmax(c_code, dim=1)
+    pid = (cid / ratio).long()
     # print(torch.argmax(c_code,  dim=1))
     # print(pid)
     p_code = torch.zeros([c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
@@ -59,21 +60,20 @@ def child_to_parent(c_code):
         p_code[i][pid[i]] = 1
     return p_code
 
+
 def child_to_background(c_code):
     cid = torch.argmax(c_code,  dim=1)
-    bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-    # print(bg_categories)
-    bid = cid % bg_categories
+    bid = cid % cfg.BG_CATEGORIES
     # print(bid)
     # sys.exit(0)
-    b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
+    b_code = torch.zeros([c_code.size(0), cfg.BG_CATEGORIES]).cuda()
     for i in range(c_code.size(0)):
         b_code[i][bid[i]] = 1
     return b_code
 
 # def child_to_background_rand_b(c_code):
 #     # cid = torch.argmax(c_code,  dim=1)
-#     bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
+#
 #     b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
 #     for i in range(c_code.size(0)):
 #         bid = torch.randint(0, bg_categories-1, ())
@@ -151,10 +151,7 @@ class INIT_STAGE_G(nn.Module):
         elif self.c_flag == 2:  # child
             self.in_dim = cfg.GAN.Z_DIM + cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            # print(bg_categories)
-            self.in_dim = cfg.GAN.Z_DIM + bg_categories
+            self.in_dim = cfg.GAN.Z_DIM + cfg.BG_CATEGORIES
 
         self.define_module()
 
@@ -194,9 +191,7 @@ class NEXT_STAGE_G_SAME(nn.Module):
         elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            self.ef_dim = bg_categories
+            self.ef_dim = cfg.BG_CATEGORIES
 
         self.num_residual = num_residual
         self.define_module()
@@ -234,9 +229,7 @@ class NEXT_STAGE_G_UP(nn.Module):
         elif use_hrc == 2:  # For child
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:  # bg
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            self.ef_dim = bg_categories
+            self.ef_dim = cfg.BG_CATEGORIES
 
         self.num_residual = num_residual
         self.define_module()
@@ -309,7 +302,6 @@ class G_NET(nn.Module):
 
         self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
         self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
-        # self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
@@ -325,7 +317,6 @@ class G_NET(nn.Module):
             self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
 
             self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
-            # self.attn = Self_Attn(ngf // 2, 'relu')
 
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
@@ -350,7 +341,6 @@ class G_NET(nn.Module):
 
         self.p_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=1).apply(weights_init))
-        # self.attn = Self_Attn(ngf // 2, 'relu')
 
         self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
@@ -364,7 +354,7 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, alpha=None, p_code=None, bg_code=None):
+    def forward(self, z_code, c_code, p_code=None, bg_code=None, alpha=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
@@ -376,10 +366,7 @@ class G_NET(nn.Module):
             p_code = child_to_parent(c_code)
             # bg_code = child_to_background(c_code)
             bg_code = c_code
-            # bg_code = child_to_background_rand_b(c_code)
 
-            # bg_code = c_code
-            # bg_code = parent_to_background(p_code)
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
         h_code_p = self.p_code_init(z_code, p_code)
@@ -395,8 +382,6 @@ class G_NET(nn.Module):
             _c_mk_net = self.c_mk_net[i]
 
             h_code_bg = _bg_code_net(h_code_bg, bg_code)
-            # if i == self.cur_depth:
-            #     h_code_bg, bg_attn = self.attn(h_code_bg)
 
             fake_img1 = _bg_img_net(h_code_bg)
             if i == self.cur_depth and i != start_depth and alpha < 1:
@@ -406,8 +391,6 @@ class G_NET(nn.Module):
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
 
             h_code_p = _p_code_net(h_code_p, p_code)
-            # if i == self.cur_depth:
-            #     h_code_p, fg_attn = self.attn(h_code_p)
 
             fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
@@ -461,9 +444,6 @@ class G_NET(nn.Module):
                 fake_imgs.append(fake_img3_final)
                 fg_imgs.append(fake_img3_fg)
                 mk_imgs.append(fake_img3_mk)
-
-                # recon_info = recon_mask_info(fg_attn, fake_img2_mk)
-                # recon_mask = self.recon_net(recon_info)
 
         return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, bg_code]
 
@@ -597,9 +577,7 @@ class D_NET_PC_BASE(nn.Module):
         elif self.stg_no == 2:
             self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
         else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            self.ef_dim = bg_categories
+            self.ef_dim = cfg.BG_CATEGORIES
 
         self.define_module()
 
@@ -636,19 +614,11 @@ class D_NET_PC(nn.Module):
         super().__init__()
         self.df_dim = 256
         self.stg_no = stg_no
-        if self.stg_no == 1:
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif self.stg_no == 2:
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
-        else:
-            bg_categories = cfg.FINE_GRAINED_CATEGORIES // cfg.NUM_C_PER_B
-            # bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-            self.ef_dim = bg_categories
+
         self.define_module()
 
     def define_module(self):
         ndf = self.df_dim
-        efg = self.ef_dim
 
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
         self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
