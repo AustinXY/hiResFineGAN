@@ -261,9 +261,11 @@ class FineGAN_trainer(object):
         bg_img = self.fake_imgs[0]
         bg_of_bg = bg_mk * bg_img
 
-        p_info_wt = 1.
+        # fg_of_fnl = fg_mk * self.fake_imgs[2]
+
+        p_info_wt = 3.
         c_info_wt = 1.
-        b_info_wt = 0.
+        b_info_wt = 1.
         for i in range(3):
             if i == 2:  # real/fake loss for child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], alpha=self.alpha)
@@ -428,9 +430,9 @@ class FineGAN_trainer(object):
                         with torch.no_grad():
                             fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, alpha=self.alpha)
 
-                        fg_mask = self.mk_imgs[0]
+                        fg_mask = mk_imgs[0]
                         bg_mask = torch.ones_like(fg_mask) - fg_mask
-                        bg_of_bg = bg_mask * self.fake_imgs[0]
+                        bg_of_bg = bg_mask * fake_imgs[0]
                         save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [bg_of_bg]),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
@@ -564,6 +566,7 @@ class FineGAN_evaluator(object):
             cfg_li = []
             pfgmk_li = []
             cfgmk_li = []
+            bbgmk_li = []
             b_li = np.random.permutation(cfg.BG_CATEGORIES-1)
             p_li = np.random.permutation(cfg.SUPER_CATEGORIES-1)
             c_li = np.random.permutation(cfg.FINE_GRAINED_CATEGORIES-1)
@@ -592,24 +595,28 @@ class FineGAN_evaluator(object):
 
             # c_li = p_c_dict[19]
             # c_li = np.array(range(0, 98))
-            c_li = np.array(range(98, 196))
-            nrow = 10
+            # c_li = np.array(range(98, 196))
+            nrow = 20
             for k in range(1):
                 b = b_li[k]
                 p = p_li[k]
                 c = c_li[k]
 
-                for i in range(len(c_li)):
+                for i in range(nrow):
                     bg_code = torch.zeros([self.batch_size, cfg.BG_CATEGORIES])
                     p_code = torch.zeros([self.batch_size, cfg.SUPER_CATEGORIES])
                     c_code = torch.zeros([self.batch_size, cfg.FINE_GRAINED_CATEGORIES])
 
                     # noise.data.normal_(0, 1)
+                    # b = random.randint(0, cfg.BG_CATEGORIES-1)
+                    p = i
+                    # p = random.randint(0, cfg.SUPER_CATEGORIES-1)
+                    # c = random.randint(0, cfg.FINE_GRAINED_CATEGORIES-1)
                     # b = b_li[i]
                     # p = p_li[i]
-                    c = c_li[i]
-                    b = c % cfg.BG_CATEGORIES
-                    p = int(c // 9.8)
+                    # c = c_li[i]
+                    # b = c % cfg.BG_CATEGORIES
+                    # p = int(c // 9.8)
                     # print('b:', b, 'p:', p, 'c:', c)
                     # p = i
                     for j in range(self.batch_size):
@@ -617,8 +624,14 @@ class FineGAN_evaluator(object):
                         p_code[j][p] = 1
                         c_code[j][c] = 1
 
-                    fake_imgs, fg_imgs, mk_imgs, fgmk_imgs, _ = netG(
-                        noise, c_code, None, p_code, bg_code)  # Forward pass through the generator
+                    with torch.no_grad():
+                        fake_imgs, fg_imgs, mk_imgs, fgmk_imgs, _ = netG(
+                            noise, c_code, p_code, bg_code)  # Forward pass through the generator
+
+                    fg_mask = mk_imgs[0][0]
+                    bg_mask = torch.ones_like(fg_mask) - fg_mask
+                    bg_of_bg = bg_mask * fake_imgs[0][0]
+
                     bg_li.append(fake_imgs[0][0])
                     pf_li.append(fake_imgs[1][0])
                     cf_li.append(fake_imgs[2][0])
@@ -628,18 +641,21 @@ class FineGAN_evaluator(object):
                     cfg_li.append(fg_imgs[1][0])
                     pfgmk_li.append(fgmk_imgs[0][0])
                     cfgmk_li.append(fgmk_imgs[1][0])
+                    bbgmk_li.append(bg_of_bg)
 
-            save_image(bg_li, self.save_dir, 'background', nrow, res)
-            save_image(pf_li, self.save_dir, 'parent_final', nrow, res)
-            save_image(cf_li, self.save_dir, 'child_final', nrow, res)
-            save_image(pfg_li, self.save_dir, 'parent_foreground', nrow, res)
-            save_image(cfg_li, self.save_dir, 'child_foreground', nrow, res)
-            save_image(pk_li, self.save_dir, 'parent_mask', nrow, res)
-            save_image(ck_li, self.save_dir, 'child_mask', nrow, res)
+            save_image(bg_li, self.save_dir, '0background', nrow, res)
+            save_image(pf_li, self.save_dir, '1parent_final', nrow, res)
+            save_image(cf_li, self.save_dir, '2child_final', nrow, res)
+            save_image(pfg_li, self.save_dir, '3parent_foreground', nrow, res)
+            save_image(cfg_li, self.save_dir, '4child_foreground', nrow, res)
+            save_image(pk_li, self.save_dir, '5parent_mask', nrow, res)
+            save_image(ck_li, self.save_dir, '6child_mask', nrow, res)
             save_image(pfgmk_li, self.save_dir,
-                       'parent_foreground_masked', nrow, res)
+                       '7parent_foreground_masked', nrow, res)
             save_image(cfgmk_li, self.save_dir,
-                       'child_foreground_masked', nrow, res)
+                       '8child_foreground_masked', nrow, res)
+            save_image(bbgmk_li, self.save_dir,
+                       '9background_background_masked', nrow, res)
 
     def save_image(self, images, save_dir, iname):
 

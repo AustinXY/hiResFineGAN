@@ -72,7 +72,7 @@ def child_to_background(c_code):
     return b_code
 
 # def child_to_background_rand_b(c_code):
-#     # cid = torch.argmax(c_code,  dim=1)
+    # cid = torch.argmax(c_code,  dim=1)
 #
 #     b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
 #     for i in range(c_code.size(0)):

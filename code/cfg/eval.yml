@@ -5,17 +5,18 @@ WORKERS: 1  # 4
 
 SUPER_CATEGORIES: 20     # For CUB
 FINE_GRAINED_CATEGORIES: 196   # For CUB
+BG_CATEGORIES: 49  # 4c/b
+
 TEST_CHILD_CLASS: 125      # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
 TEST_PARENT_CLASS: 0      # specify any value [0, SUPER_CATEGORIES - 1]
 TEST_BACKGROUND_CLASS: 0  # specify any value [0, FINE_GRAINED_CATEGORIES - 1]
 
-NUM_C_PER_B: 1   # c/b
 
 TIED_CODES: False
 
 TRAIN:
     FLAG: False
-    NET_G: '../output/1c_per_b&&oob/Model/netG_57440_depth2.pth'
+    NET_G: '../output/car_2021_01_07_16_43_40/Model/netG_57440_depth2.pth'
     BATCH_SIZE: 1
     START_DEPTH: 2
 
