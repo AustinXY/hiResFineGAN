@@ -263,9 +263,9 @@ class FineGAN_trainer(object):
 
         # fg_of_fnl = fg_mk * self.fake_imgs[2]
 
-        p_info_wt = 3.
+        p_info_wt = 1.
         c_info_wt = 1.
-        b_info_wt = 1.
+        b_info_wt = 0.
         for i in range(3):
             if i == 2:  # real/fake loss for child (2) stage
                 outputs = self.netsD[i](self.fake_imgs[i], alpha=self.alpha)

@@ -364,8 +364,8 @@ class G_NET(nn.Module):
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
             p_code = child_to_parent(c_code)
-            # bg_code = child_to_background(c_code)
-            bg_code = c_code
+            bg_code = child_to_background(c_code)
+            # bg_code = c_code
 
 
         h_code_bg = self.bg_code_init(z_code, bg_code)
