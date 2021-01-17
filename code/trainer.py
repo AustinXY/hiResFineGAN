@@ -81,7 +81,6 @@ def load_network(gpus):
     netsD = []
     netsD.append(D_NET_PC(0))
     netsD.append(D_NET_PC(1))
-    netsD.append(D_NET_PC(2))
 
     for i in range(len(netsD)):
         netsD[i].apply(weights_init)
@@ -119,30 +118,24 @@ def load_network(gpus):
 
 def define_optimizers(netG, netsD):
     optimizersD = []
-    # num_Ds = len(netsD)
-    # for i in range(num_Ds):
-    opt = optim.Adam(netsD[2].parameters(),
-                        lr=cfg.TRAIN.DISCRIMINATOR_LR,
-                        betas=(0.5, 0.999))
+    opt = optim.Adam(netsD[1].parameters(),
+                     lr=cfg.TRAIN.DISCRIMINATOR_LR,
+                     betas=(0.5, 0.999))
     optimizersD.append(opt)
 
     optimizerG = []
-    optimizerG.append(optim.Adam(netG.parameters(),
-                            lr=cfg.TRAIN.GENERATOR_LR,
-                            betas=(0.5, 0.999)))
+    opt = optim.Adam(netG.parameters(),
+                     lr=cfg.TRAIN.GENERATOR_LR,
+                     betas=(0.5, 0.999))
+    optimizerG.append(opt)
 
     opt = optim.Adam(netsD[0].parameters(),
                      lr=cfg.TRAIN.GENERATOR_LR,
                      betas=(0.5, 0.999))
     optimizerG.append(opt)
 
-    opt = optim.Adam(netsD[1].parameters(),
-                     lr=cfg.TRAIN.GENERATOR_LR,
-                     betas=(0.5, 0.999))
-    optimizerG.append(opt)
-
-    opt = optim.Adam([{'params': netsD[2].module.down_net[0].jointConv.parameters()},
-                      {'params': netsD[2].module.down_net[0].logits.parameters()}],
+    opt = optim.Adam([{'params': netsD[1].module.down_net[0].jointConv.parameters()},
+                      {'params': netsD[1].module.down_net[0].logits.parameters()}],
                      lr=cfg.TRAIN.GENERATOR_LR,
                      betas=(0.5, 0.999))
     optimizerG.append(opt)
@@ -209,8 +202,8 @@ class FineGAN_trainer(object):
 
 
     def train_Dnet(self, count):
-        idx = 2
-        netD, optD = self.netsD[idx], self.optimizersD[0]
+        # idx = 1
+        netD, optD = self.netsD[1], self.optimizersD[0]
         netD.zero_grad()
 
         flag = count % 100
@@ -218,7 +211,7 @@ class FineGAN_trainer(object):
 
         real_imgs = self.real_cimgs
 
-        fake_imgs = self.fake_imgs[idx]
+        fake_imgs = self.fake_imgs[1]
         real_logits = netD(real_imgs, alpha=self.alpha)
 
         fake_labels = torch.zeros_like(real_logits[1])
@@ -234,40 +227,30 @@ class FineGAN_trainer(object):
         optD.step()
 
         if flag == 0:
-            summary_D = summary.scalar('D_loss%d' % idx, errD.item())
+            summary_D = summary.scalar('D_loss%d' % 1, errD.item())
             self.summary_writer.add_summary(summary_D, count)
-            summary_D_real = summary.scalar('D_loss_real_%d' % idx, errD_real.item())
+            summary_D_real = summary.scalar('D_loss_real_%d' % 1, errD_real.item())
             self.summary_writer.add_summary(summary_D_real, count)
-            summary_D_fake = summary.scalar('D_loss_fake_%d' % idx, errD_fake.item())
+            summary_D_fake = summary.scalar('D_loss_fake_%d' % 1, errD_fake.item())
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
 
     def train_Gnet(self, count):
         self.netG.zero_grad()
-        for i in range(len(self.netsD)):
-            self.netsD[i].zero_grad()
+        for netD in self.netsD:
+            netD.zero_grad()
 
         errG_total = 0
         flag = count % 100
 
         criterion_one, criterion_class = self.criterion_one, self.criterion_class
-        c_code, p_code, b_code = self.c_code, self.p_code, self.b_code
-
-        fg_mk = self.mk_imgs[0]
-        bg_mk = torch.ones_like(fg_mk) - fg_mk
-        ch_mk = self.mk_imgs[1]
-
-        bg_img = self.fake_imgs[0]
-        bg_of_bg = bg_mk * bg_img
-
-        # fg_of_fnl = fg_mk * self.fake_imgs[2]
+        p_code, b_code = self.p_code, self.b_code
 
         p_info_wt = 1.
-        c_info_wt = 1.
         b_info_wt = 0.
-        for i in range(3):
-            if i == 2:  # real/fake loss for child (2) stage
+        for i in range(1, 2):
+            if i == 1:  # real/fake loss for parent (1) stage
                 outputs = self.netsD[i](self.fake_imgs[i], alpha=self.alpha)
                 real_labels = torch.ones_like(outputs[1])
                 errG = criterion_one(outputs[1], real_labels)
@@ -276,11 +259,9 @@ class FineGAN_trainer(object):
             if i == 1: # Mutual information loss for the parent stage (1)
                 pred_p = self.netsD[i](self.fg_mk[0], alpha=self.alpha)[0]
                 errG_info = criterion_class(pred_p, torch.nonzero(p_code.long())[:,1]) * p_info_wt
-            elif i == 2: # Mutual information loss for the child stage (2)
-                pred_c = self.netsD[i](self.fg_mk[1], alpha=self.alpha)[0]
-                errG_info = criterion_class(pred_c, torch.nonzero(c_code.long())[:,1]) * c_info_wt
+
             else: # Mutual information loss for the bg stage (0)
-                pred_b = self.netsD[i](bg_of_bg, alpha=self.alpha)[0]
+                pred_b = self.netsD[i](self.fg_mk[1], alpha=self.alpha)[0]
                 errG_info = criterion_class(pred_b, torch.nonzero(b_code.long())[:,1]) * b_info_wt
 
             errG_total += errG_info
@@ -293,22 +274,22 @@ class FineGAN_trainer(object):
                   summary_D = summary.scalar('G_loss%d' % i, errG.item())
                   self.summary_writer.add_summary(summary_D, count)
 
-        # fg_mk = self.mk_imgs[0]
-        # bg_mk = torch.ones_like(fg_mk) - fg_mk
+        fg_mk = self.mk_imgs[0]
+        bg_mk = torch.ones_like(fg_mk) - fg_mk
         ms = fg_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
         min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
         binary_loss = self.binarization_loss(fg_mk) * 2e1
         # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
-        oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
+        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
         bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
 
-        errG_total += binary_loss + fg_cvg_loss + bg_cvg_loss + oob_loss
+        errG_total += binary_loss + fg_cvg_loss + bg_cvg_loss
 
         self.cl = fg_cvg_loss + bg_cvg_loss
         self.bl = binary_loss
-        self.ol = oob_loss
+        # self.ol = oob_loss
 
         errG_total.backward()
 
@@ -418,8 +399,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, cvg_loss: {}, oob_loss: {}".
-                              format(self.bl.item(), self.cl.item(), self.ol.item()))
+                        print("binary_loss: {}, cvg_loss: {}".
+                              format(self.bl.item(), self.cl.item()))
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
@@ -430,10 +411,7 @@ class FineGAN_trainer(object):
                         with torch.no_grad():
                             fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, alpha=self.alpha)
 
-                        fg_mask = mk_imgs[0]
-                        bg_mask = torch.ones_like(fg_mask) - fg_mask
-                        bg_of_bg = bg_mask * fake_imgs[0]
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk + [bg_of_bg]),
+                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)

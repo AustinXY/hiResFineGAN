@@ -296,48 +296,37 @@ class G_NET(nn.Module):
     def define_module(self):
         ngf = self.gf_dim
 
-        self.bg_code_init = INIT_STAGE_G(ngf * 8, c_flag=0)
-        self.bg_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=0)])
-        self.bg_img_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
+        self.b_code_init = INIT_STAGE_G(ngf * 8, c_flag=0)
+        self.b_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=0)])
+        self.b_img_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
 
         self.p_code_init = INIT_STAGE_G(ngf * 8, c_flag=1)
         self.p_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf, use_hrc=1)])
-
         self.p_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 2)])
         self.p_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 2)])
-
-        self.c_code_net = nn.ModuleList([NEXT_STAGE_G_SAME(ngf // 2, use_hrc=2)])
-        self.c_fg_net = nn.ModuleList([TO_RGB_LAYER(ngf // 4)])
-        self.c_mk_net = nn.ModuleList([TO_GRAY_LAYER(ngf // 4)])
 
         ngf = ngf // 2
 
         for _ in range(start_depth):
-            self.bg_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=0))
-            self.bg_img_net.append(TO_RGB_LAYER(ngf // 2))
+            self.b_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=0))
+            self.b_img_net.append(TO_RGB_LAYER(ngf // 2))
 
             self.p_code_net.append(NEXT_STAGE_G_UP(ngf, use_hrc=1))
-
             self.p_fg_net.append(TO_RGB_LAYER(ngf // 2))
             self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2))
-
-            self.c_code_net.append(NEXT_STAGE_G_SAME(ngf // 2, use_hrc=2))
-            self.c_fg_net.append(TO_RGB_LAYER(ngf // 4))
-            self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4))
 
             ngf = ngf // 2
 
         self.gf_dim = ngf
         self.cur_depth = start_depth
-        self.recon_net = RECON_NET()
 
     def inc_depth(self):
         # oneline apply should work??
         ngf = self.gf_dim
 
-        self.bg_code_net.append(NEXT_STAGE_G_UP(
+        self.b_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=0).apply(weights_init))
-        self.bg_img_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
+        self.b_img_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
 
         self.p_code_net.append(NEXT_STAGE_G_UP(
             ngf, use_hrc=1).apply(weights_init))
@@ -345,16 +334,11 @@ class G_NET(nn.Module):
         self.p_fg_net.append(TO_RGB_LAYER(ngf // 2).apply(weights_init))
         self.p_mk_net.append(TO_GRAY_LAYER(ngf // 2).apply(weights_init))
 
-        self.c_code_net.append(NEXT_STAGE_G_SAME(
-            ngf // 2, use_hrc=2).apply(weights_init))
-        self.c_fg_net.append(TO_RGB_LAYER(ngf // 4).apply(weights_init))
-        self.c_mk_net.append(TO_GRAY_LAYER(ngf // 4).apply(weights_init))
-
         ngf = ngf // 2
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, p_code=None, bg_code=None, alpha=None):
+    def forward(self, z_code, c_code, p_code=None, b_code=None, alpha=None):
 
         fake_imgs = []  # Will contain [background image, parent image, child image]
         fg_imgs = []  # Will contain [parent foreground, child foreground]
@@ -364,26 +348,29 @@ class G_NET(nn.Module):
         if cfg.TIED_CODES:
             # Obtaining the parent code from child code
             p_code = child_to_parent(c_code)
-            bg_code = child_to_background(c_code)
-            # bg_code = c_code
+            b_code = child_to_background(c_code)
+        # bsz = z_code.size(0)
+        # pid = torch.randint(0, cfg.SUPER_CATEGORIES, (bsz,))
+        # bid = torch.randint(0, cfg.BG_CATEGORIES, (bsz,))
+        # p_code = torch.zeros([bsz, cfg.SUPER_CATEGORIES]).cuda()
+        # b_code = torch.zeros([bsz, cfg.BG_CATEGORIES]).cuda()
+        # for i in range(bsz):
+        #     p_code[i, pid[i]] = 1
+        #     b_code[i, bid[i]] = 1
 
-
-        h_code_bg = self.bg_code_init(z_code, bg_code)
+        h_code_b = self.b_code_init(z_code, b_code)
         h_code_p = self.p_code_init(z_code, p_code)
 
         for i in range(self.cur_depth + 1):
-            _bg_code_net = self.bg_code_net[i]
-            _bg_img_net = self.bg_img_net[i]
+            _b_code_net = self.b_code_net[i]
+            _b_img_net = self.b_img_net[i]
             _p_code_net = self.p_code_net[i]
             _p_fg_net = self.p_fg_net[i]
             _p_mk_net = self.p_mk_net[i]
-            _c_code_net = self.c_code_net[i]
-            _c_fg_net = self.c_fg_net[i]
-            _c_mk_net = self.c_mk_net[i]
 
-            h_code_bg = _bg_code_net(h_code_bg, bg_code)
+            h_code_b = _b_code_net(h_code_b, b_code)
 
-            fake_img1 = _bg_img_net(h_code_bg)
+            fake_img1 = _b_img_net(h_code_b)
             if i == self.cur_depth and i != start_depth and alpha < 1:
                 prev_fake_img1 = fake_imgs[(i-1)*3]
                 prev_fake_img1 = F.upsample(
@@ -406,24 +393,6 @@ class G_NET(nn.Module):
                 fake_img2_mk = (1 - alpha) * \
                     prev_fake_img2_mk + alpha * fake_img2_mk
 
-            h_code_c = _c_code_net(h_code_p, c_code)
-
-            fake_img3_fg = _c_fg_net(h_code_c)  # Child foreground
-            fake_img3_mk = _c_mk_net(h_code_c)  # Child mask
-            # fake_img3_mk = fake_img2_mk * fake_img3_mk
-            # fake_img3_mk = (1 - 1) * fake_img3_mk + 1 * (fake_img2_mk * fake_img3_mk)
-            if i == self.cur_depth and i != start_depth and alpha < 1:
-                prev_fake_img3_fg = fg_imgs[(i-1)*2+1]
-                prev_fake_img3_fg = F.upsample(
-                    prev_fake_img3_fg, scale_factor=2)  # mode='nearest'
-                fake_img3_fg = (1 - alpha) * \
-                    prev_fake_img3_fg + alpha * fake_img3_fg
-                prev_fake_img3_mk = mk_imgs[(i-1)*2+1]
-                prev_fake_img3_mk = F.upsample(
-                    prev_fake_img3_mk, scale_factor=2)  # mode='nearest'
-                fake_img3_mk = (1 - alpha) * \
-                    prev_fake_img3_mk + alpha * fake_img3_mk
-
             if i == self.cur_depth:
                 fake_imgs.append(fake_img1)
                 ones_mask_p = torch.ones_like(fake_img2_mk)
@@ -431,25 +400,13 @@ class G_NET(nn.Module):
                 fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
                 fg_mk.append(fg_masked2)
                 bg_masked2 = torch.mul(fake_img1, opp_mask_p)
+                fg_mk.append(bg_masked2)
                 fake_img2_final = fg_masked2 + bg_masked2  # Parent image
                 fake_imgs.append(fake_img2_final)
                 fg_imgs.append(fake_img2_fg)
                 mk_imgs.append(fake_img2_mk)
-                ones_mask_c = torch.ones_like(fake_img3_mk)
-                opp_mask_c = ones_mask_c - fake_img3_mk
-                fg_masked3 = torch.mul(fake_img3_fg, fake_img3_mk)
-                fg_mk.append(fg_masked3)
-                bg_masked3 = torch.mul(fake_img2_final, opp_mask_c)
-                fake_img3_final = fg_masked3 + bg_masked3  # Child image
-                fake_imgs.append(fake_img3_final)
-                fg_imgs.append(fake_img3_fg)
-                mk_imgs.append(fake_img3_mk)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, bg_code]
-
-def recon_mask_info(fg_attn, fg_mk):
-    ms = fg_mk.size()
-    return torch.bmm(fg_mk.view(ms[0], 1, ms[2]*ms[3]), fg_attn).view(ms)
+        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, b_code]
 
 # ############## D networks ################################################
 def Block3x3_leakRelu(in_planes, out_planes):
