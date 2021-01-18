@@ -117,11 +117,7 @@ class Dataset(data.Dataset):
         cimgs = get_imgs(img_name, self.cur_depth,
                          bbox, self.transform, normalize=self.norm)
 
-        # Randomly generating child code during training
-        rand_class = random.sample(range(cfg.FINE_GRAINED_CATEGORIES), 1)
-        c_code = torch.zeros([cfg.FINE_GRAINED_CATEGORIES, ])
-        c_code[rand_class] = 1
-        return cimgs, c_code, key
+        return cimgs, key
 
     def prepair_test_pairs(self, index):
         key = self.filenames[index]
@@ -130,12 +126,11 @@ class Dataset(data.Dataset):
         else:
             bbox = None
         data_dir = self.data_dir
-        c_code = self.c_code[index, :, :]
         img_name = '%s/images/%s.jpg' % (data_dir, key)
         imgs = get_imgs(img_name, self.cur_depth,
                         bbox, self.transform, normalize=self.norm)
 
-        return imgs, c_code, key
+        return imgs, key
 
     def __getitem__(self, index):
         return self.iterator(index)

@@ -28,7 +28,7 @@ import torchvision.transforms as transforms
 from datetime import datetime
 
 
-from model import G_NET, D_NET_PC
+from model import G_NET, D_NET_PC, Bi_Dis, MaskPredictor
 
 
 start_depth = cfg.TRAIN.START_DEPTH
@@ -79,13 +79,20 @@ def load_network(gpus):
     # print(netG)
 
     netsD = []
-    netsD.append(D_NET_PC(0))
-    netsD.append(D_NET_PC(1))
+    netsD.append(D_NET_PC(0))  # bg info
+    netsD.append(D_NET_PC(1))  # fg info
 
     for i in range(len(netsD)):
         netsD[i].apply(weights_init)
         netsD[i] = torch.nn.DataParallel(netsD[i], device_ids=gpus)
-        # print(netsD[i])
+
+    bi_netD = Bi_Dis()
+    bi_netD.apply(weights_init)
+    bi_netD = torch.nn.DataParallel(bi_netD, device_ids=gpus)
+
+    mkpred_net = MaskPredictor(3)
+    mkpred_net.apply(weights_init)
+    mkpred_net = torch.nn.DataParallel(mkpred_net, device_ids=gpus)
 
     count = 0
 
@@ -113,15 +120,24 @@ def load_network(gpus):
         for i in range(len(netsD)):
             netsD[i].cuda()
 
-    return netG, netsD, len(netsD), count
+    return netG, netsD, bi_netD, mkpred_net, count
 
 
-def define_optimizers(netG, netsD):
+def define_optimizers(netG, netsD, bi_netD, mkpred_net):
     optimizersD = []
     opt = optim.Adam(netsD[1].parameters(),
                      lr=cfg.TRAIN.DISCRIMINATOR_LR,
                      betas=(0.5, 0.999))
     optimizersD.append(opt)
+
+    optimizersBiD = optim.Adam(bi_netD.parameters(),
+                     lr=cfg.TRAIN.DISCRIMINATOR_LR,
+                     betas=(0.5, 0.999))
+
+    optimizersMk = optim.Adam(mkpred_net.parameters(),
+                              lr=cfg.TRAIN.DISCRIMINATOR_LR,
+                              betas=(0.5, 0.999))
+
 
     optimizerG = []
     opt = optim.Adam(netG.parameters(),
@@ -140,11 +156,12 @@ def define_optimizers(netG, netsD):
                      betas=(0.5, 0.999))
     optimizerG.append(opt)
 
-    return optimizerG, optimizersD
+    return optimizerG, optimizersD, optimizersBiD, optimizersMk
 
 
-def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
+def save_model(netG, avg_param_G, netsD, bi_netD, mkpred_net, epoch, model_dir, cur_depth):
     load_params(netG, avg_param_G)
+
     torch.save(
         netG.state_dict(),
         '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
@@ -152,6 +169,14 @@ def save_model(netG, avg_param_G, netsD, epoch, model_dir, cur_depth):
         netD = netsD[i]
         torch.save(netD.state_dict(),
             '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
+
+    torch.save(
+        bi_netD.state_dict(),
+        '%s/binetD_depth%d.pth' % (model_dir, cur_depth))
+
+    torch.save(
+        mkpred_net.state_dict(),
+        '%s/mkprednet_depth%d.pth' % (model_dir, cur_depth))
     print('Save G/Ds models.')
 
 
@@ -191,18 +216,15 @@ class FineGAN_trainer(object):
 
 
     def prepare_data(self, data):
-        cimgs, c_code, _ = data
+        cimgs, _ = data
         if cfg.CUDA:
-            vc_code = Variable(c_code).cuda()
             real_vcimgs = Variable(cimgs).cuda()
         else:
-            vc_code = Variable(c_code)
             real_vcimgs = Variable(cimgs)
-        return real_vcimgs, vc_code
+        return real_vcimgs
 
 
     def train_Dnet(self, count):
-        # idx = 1
         netD, optD = self.netsD[1], self.optimizersD[0]
         netD.zero_grad()
 
@@ -210,17 +232,17 @@ class FineGAN_trainer(object):
         criterion_one = self.criterion_one
 
         real_imgs = self.real_cimgs
+        fake_imgs = self.fake_img[0].detach()
 
-        fake_imgs = self.fake_imgs[1]
-        real_logits = netD(real_imgs, alpha=self.alpha)
+        real_logits = netD(real_imgs)[1]
+        fake_logits = netD(fake_imgs)[1]
 
-        fake_labels = torch.zeros_like(real_logits[1])
-        real_labels = torch.ones_like(real_logits[1])
+        fake_labels = torch.zeros_like(real_logits)
+        real_labels = torch.ones_like(fake_logits)
 
-        fake_logits = netD(fake_imgs.detach(), alpha=self.alpha)
 
-        errD_real = criterion_one(real_logits[1], real_labels) # Real/Fake loss for the real image
-        errD_fake = criterion_one(fake_logits[1], fake_labels) # Real/Fake loss for the fake image
+        errD_real = criterion_one(real_logits, real_labels) # Real/Fake loss for the real image
+        errD_fake = criterion_one(fake_logits, fake_labels) # Real/Fake loss for the fake image
         errD = errD_real + errD_fake
 
         errD.backward()
@@ -236,8 +258,129 @@ class FineGAN_trainer(object):
 
         return errD
 
+
+    # keep length of pb pair stored not changing
+    def real_pb_pair_log(self, pid, bid):
+        popped_b = self.real_pb_pair[pid].pop(0)
+        self.real_pb_pair[pid].append(bid)
+        self.mapped_b_count[popped_b] -= 1
+        self.mapped_b_count[bid] += 1
+
+        if self.mapped_b_count[popped_b] < self.underuse_thld:
+            self.underused_b.add(popped_b)
+        if (bid in self.underused_b) and \
+           (self.mapped_b_count[bid] >= self.underuse_thld):
+            self.underused_b.remove(bid)
+
+
+    def train_BiDnet(self, count):
+        optBiD = self.optimizersBiD
+        self.bi_netD.zero_grad()
+        self.mkpred_net.zero_grad()
+
+        flag = count % 100
+        criterion_one = self.criterion_one
+
+        real_imgs = self.real_cimgs
+        fake_imgs = self.fake_img[0].detach()
+
+        with torch.no_grad():
+            real_pred_mk = self.mkpred_net(real_imgs)
+            # fake_pred_mk = self.mkpred_net(fake_imgs)
+
+        real_bg = (torch.ones_like(real_pred_mk) - real_pred_mk) * real_imgs
+        real_fg = real_pred_mk * real_imgs
+
+        # fake_bg = (torch.ones_like(fake_pred_mk) - fake_pred_mk) * fake_imgs
+        # fake_fg = fake_pred_mk * fake_imgs
+
+        with torch.no_grad():
+            real_pred_b = self.netsD[0](real_bg)[0]
+            real_pred_p = self.netsD[1](real_fg)[0]
+
+            # fake_pred_b = self.netsD[0](fake_bg)[0]
+            # fake_pred_p = self.netsD[1](fake_fg)[0]
+
+            real_bid = torch.argmax(real_pred_b, dim=1)
+            real_pid = torch.argmax(real_pred_p, dim=1)
+            real_pred_b = torch.zeros_like(self.b_code)
+            real_pred_p = torch.zeros_like(self.p_code)
+            for i in range(real_bid.size(0)):
+                bid = real_bid[i]
+                pid = real_pid[i]
+                real_pred_b[i, bid] = 1
+                real_pred_p[i, pid] = 1
+
+                self.real_pb_pair_log(pid.item(), bid.item())
+
+            fake_pred_b = self.b_code
+            fake_pred_p = self.p_code
+
+        real_logits_b, real_logits_p = self.bi_netD(real_imgs, real_pred_b, real_pred_p, real_pred_mk)
+        fake_logits_b, fake_logits_p = self.bi_netD(fake_imgs, fake_pred_b, fake_pred_p, self.mk_img[0].detach())
+
+        real_labels = torch.ones_like(real_logits_b)
+        fake_labels = torch.zeros_like(fake_logits_b)
+
+        # Real/Fake loss for the real_img+b pair and real_img+p pair
+        errBiD_real_b = criterion_one(real_logits_b, real_labels)
+        errBiD_real_p = criterion_one(real_logits_p, real_labels)
+
+        # Real/Fake loss for the fake_img+b pair and fake_img+p pair
+        errBiD_fake_b = criterion_one(fake_logits_b, fake_labels)
+        errBiD_fake_p = criterion_one(fake_logits_p, fake_labels)
+
+        errBiD = errBiD_real_b + errBiD_real_p + errBiD_fake_b + errBiD_fake_p
+
+        errBiD.backward()
+        optBiD.step()
+
+        if flag == 0:
+            summary_BiD = summary.scalar('BiD_loss', errBiD.item())
+            self.summary_writer.add_summary(summary_BiD, count)
+            summary_BiD_real = summary.scalar('BiD_loss_real_0', errBiD_real_b.item())
+            self.summary_writer.add_summary(summary_BiD_real, count)
+            summary_BiD_real = summary.scalar('BiD_loss_real_1', errBiD_real_p.item())
+            self.summary_writer.add_summary(summary_BiD_real, count)
+            summary_BiD_fake = summary.scalar('BiD_loss_fake_0', errBiD_fake_b.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+            summary_BiD_fake = summary.scalar('BiD_loss_fake_1', errBiD_fake_p.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+
+        return errBiD
+
+
+    def train_mkpred_net(self, count):
+        optMk = self.optimizersMk
+        self.mkpred_net.zero_grad()
+        criterion = nn.MSELoss()
+
+        flag = count % 100
+
+        fake_imgs = self.fake_img[0].detach()
+
+        pred_mk = self.mkpred_net(fake_imgs)
+        real_mk = self.mk_img[0].detach()
+
+        mk_recon_loss = criterion(pred_mk, real_mk)
+        binary_loss = self.binarization_loss(pred_mk) * 1
+
+        errMk = mk_recon_loss + binary_loss
+
+        errMk.backward()
+        optMk.step()
+
+        if flag == 0:
+            summary_mkrecon = summary.scalar('mk_recon_loss', mk_recon_loss.item())
+            self.summary_writer.add_summary(summary_mkrecon, count)
+
+        return mk_recon_loss
+
+
     def train_Gnet(self, count):
         self.netG.zero_grad()
+        self.mkpred_net.zero_grad()
+        self.bi_netD.zero_grad()
         for netD in self.netsD:
             netD.zero_grad()
 
@@ -247,52 +390,65 @@ class FineGAN_trainer(object):
         criterion_one, criterion_class = self.criterion_one, self.criterion_class
         p_code, b_code = self.p_code, self.b_code
 
+        fake_imgs = self.fake_img[0]
+        fake_mk = self.mk_img[0]
+
+        # final image real/fake loss
+        fake_logits = self.netsD[1](fake_imgs)[1]
+        real_labels = torch.ones_like(fake_logits)
+        errG = criterion_one(fake_logits, real_labels)
+        errG_total += errG
+
+        # Real/Fake loss for the real_img+b pair and real_img+p pair
+        fake_bg = (torch.ones_like(fake_mk) - fake_mk) * fake_imgs
+        fake_fg = fake_mk * fake_imgs
+
+        fake_logits_b, fake_logits_p = self.bi_netD(fake_imgs, b_code, p_code, fake_mk)
+
+        real_labels = torch.ones_like(fake_logits_b)
+
+        errBiD_fake_b = criterion_one(fake_logits_b, real_labels)
+        errBiD_fake_p = criterion_one(fake_logits_p, real_labels)
+        errG_total += errBiD_fake_b + errBiD_fake_p
+
+        # info loss for bg and fg
+        with torch.no_grad():
+            fake_pred_b = self.netsD[0](fake_bg)[0]
+            fake_pred_p = self.netsD[1](fake_fg)[0]
+
+        b_info_wt = 1.
         p_info_wt = 1.
-        b_info_wt = 0.
-        for i in range(1, 2):
-            if i == 1:  # real/fake loss for parent (1) stage
-                outputs = self.netsD[i](self.fake_imgs[i], alpha=self.alpha)
-                real_labels = torch.ones_like(outputs[1])
-                errG = criterion_one(outputs[1], real_labels)
-                errG_total += errG
+        errG_info_b = criterion_class(fake_pred_b, torch.nonzero(b_code.long())[:,1]) * b_info_wt
+        errG_info_p = criterion_class(fake_pred_p, torch.nonzero(p_code.long())[:,1]) * p_info_wt
+        errG_total += errG_info_b + errG_info_p
 
-            if i == 1: # Mutual information loss for the parent stage (1)
-                pred_p = self.netsD[i](self.fg_mk[0], alpha=self.alpha)[0]
-                errG_info = criterion_class(pred_p, torch.nonzero(p_code.long())[:,1]) * p_info_wt
+        if flag == 0:
+            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_0', errBiD_fake_b.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_1', errBiD_fake_p.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+            summary_D_class = summary.scalar('Information_loss_0', errG_info_b.item())
+            self.summary_writer.add_summary(summary_D_class, count)
+            summary_D_class = summary.scalar('Information_loss_1', errG_info_p.item())
+            self.summary_writer.add_summary(summary_D_class, count)
+            summary_D = summary.scalar('G_loss', errG.item())
+            self.summary_writer.add_summary(summary_D, count)
 
-            else: # Mutual information loss for the bg stage (0)
-                pred_b = self.netsD[i](self.fg_mk[1], alpha=self.alpha)[0]
-                errG_info = criterion_class(pred_b, torch.nonzero(b_code.long())[:,1]) * b_info_wt
-
-            errG_total += errG_info
-
-            if flag == 0:
-                summary_D_class = summary.scalar('Information_loss_%d' % i, errG_info.item())
-                self.summary_writer.add_summary(summary_D_class, count)
-
-                if i == 2:
-                  summary_D = summary.scalar('G_loss%d' % i, errG.item())
-                  self.summary_writer.add_summary(summary_D, count)
-
-        fg_mk = self.mk_imgs[0]
-        bg_mk = torch.ones_like(fg_mk) - fg_mk
-        ms = fg_mk.size()
+        # bg_mk = torch.ones_like(fake_mk) - fake_mk
+        ms = fake_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
-        min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
-        binary_loss = self.binarization_loss(fg_mk) * 2e1
-        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 1e-2
-        # oob_loss = torch.sum(bg_mk * ch_mk, dim=(-1,-2)).mean() * 0
-        fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fg_mk, dim=(-1,-2))).mean() * 1e-2
-        bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
+        # min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
+        binary_loss = self.binarization_loss(fake_mk) * 1e1
+        fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fake_mk, dim=(-1,-2))).mean() * 1e-2
+        # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
 
-        errG_total += binary_loss + fg_cvg_loss + bg_cvg_loss
+        errG_total += binary_loss + fg_cvg_loss #+ bg_cvg_loss
 
-        self.cl = fg_cvg_loss + bg_cvg_loss
+        self.cl = fg_cvg_loss #+ bg_cvg_loss
         self.bl = binary_loss
         # self.ol = oob_loss
 
         errG_total.backward()
-
         for optG in self.optimizerG:
             optG.step()
         return errG_total
@@ -323,13 +479,34 @@ class FineGAN_trainer(object):
         return dataloader
 
 
+    def sample_pb_code(self, batch_size):
+        has_underused_b = False
+        if len(self.underused_b) != 0:
+            has_underused_b = True
+
+        rand_pids = list(np.random.randint(cfg.FG_CATEGORIES, size=batch_size))
+        b_code = torch.torch.zeros([batch_size, cfg.BG_CATEGORIES]).cuda()
+        p_code = torch.torch.zeros([batch_size, cfg.FG_CATEGORIES]).cuda()
+        for i in range(batch_size):
+            pid = rand_pids[i]
+
+            if has_underused_b and torch.rand(1) < 0.5:
+                bid = random.sample(self.underused_b, 1)
+            else:
+                bid = random.sample(self.real_pb_pair[pid], 1)
+
+            b_code[i, bid] = 1
+            p_code[i, pid] = 1
+        return p_code, b_code
+
+
     def train(self):
-        self.netG, self.netsD, self.num_Ds, start_count = load_network(self.gpus)
+        self.netG, self.netsD, self.bi_netD, self.mkpred_net, start_count = load_network(self.gpus)
         newly_loaded = True
         avg_param_G = copy_G_params(self.netG)
 
-        self.optimizerG, self.optimizersD = \
-            define_optimizers(self.netG, self.netsD)
+        self.optimizerG, self.optimizersD, self.optimizersBiD, self.optimizersMk = \
+            define_optimizers(self.netG, self.netsD, self.bi_netD, self.mkpred_net)
 
         self.criterion = nn.BCELoss(reduce=False)
         self.criterion_one = nn.BCELoss()
@@ -344,6 +521,24 @@ class FineGAN_trainer(object):
 
         print ("Starting normal FineGAN training..")
         count = start_count
+
+        self.mapped_b_count = {}
+        for b in range(cfg.BG_CATEGORIES):
+            self.mapped_b_count[b] = 0
+
+        self.underused_b = set(range(cfg.BG_CATEGORIES))
+        self.underuse_thld = 7
+
+        store_len = 100
+        self.real_pb_pair = {}
+        for p in range(cfg.FG_CATEGORIES):
+            rand_b = list(np.random.randint(cfg.BG_CATEGORIES, size=store_len))
+            self.real_pb_pair[p] = rand_b
+            for b in rand_b:
+                self.mapped_b_count[b] += 1
+                if (b in self.underused_b) and \
+                   (self.mapped_b_count[b] >= self.underuse_thld):
+                    self.underused_b.remove(b)
 
         for cur_depth in range(start_depth, end_depth+1):
             max_epoch = blend_epochs_per_depth[cur_depth] + \
@@ -377,19 +572,17 @@ class FineGAN_trainer(object):
                 for step, data in enumerate(dataloader, 0):
 
                     count += 1
-                    self.real_cimgs, self.c_code = self.prepare_data(data)
-
+                    self.real_cimgs = self.prepare_data(data)
+                    bsz = self.real_cimgs.size(0)
+                    self.p_code, self.b_code = self.sample_pb_code(bsz)
                     # Feedforward through Generator. Obtain stagewise fake images
                     noise.data.normal_(0, 1)
-                    self.fake_imgs, self.fg_imgs, self.mk_imgs, self.fg_mk, pb_code = self.netG(noise, self.c_code, alpha=self.alpha)
-
-                    self.p_code, self.b_code = pb_code
-
-                    # Obtain the parent code given the child code
-                    # self.p_code = child_to_parent(self.c_code, cfg.FINE_GRAINED_CATEGORIES, cfg.SUPER_CATEGORIES)
+                    self.fake_img, self.raw_imgs, self.mk_img = self.netG(noise, self.p_code, self.b_code)
 
                     # Update Discriminator networks
+                    self.train_mkpred_net(count)
                     errD_total = self.train_Dnet(count)
+                    self.train_BiDnet(count)
 
                     # Update the Generator networks
                     errG_total = self.train_Gnet(count)
@@ -399,20 +592,27 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, cvg_loss: {}".
-                              format(self.bl.item(), self.cl.item()))
+                        print("binary_loss: {}, cvg_loss: {}".format(self.bl.item(), self.cl.item()))
+                        print(self.mapped_b_count)
 
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
-                            save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+                            save_model(self.netG, avg_param_G, self.netsD, self.bi_netD, self.mkpred_net,
+                                       count, self.model_dir, cur_depth)
                         # Save images
                         load_params(self.netG, avg_param_G)
 
                         with torch.no_grad():
-                            fake_imgs, fg_imgs, mk_imgs, fg_mk, _ = self.netG(fixed_noise, self.c_code, alpha=self.alpha)
+                            fake_img, raw_imgs, mk_img = self.netG(fixed_noise, self.p_code, self.b_code)
+                            real_pred_mk = self.mkpred_net(self.real_cimgs)
 
-                        save_img_results((fake_imgs + fg_imgs + mk_imgs + fg_mk),
-                                         count, self.image_dir, self.summary_writer, cur_depth)
+                        fake_fg = mk_img[0] * fake_img[0]
+                        fake_bg = (torch.ones_like(mk_img[0]) - mk_img[0]) * fake_img[0]
+                        real_fg = real_pred_mk * self.real_cimgs
+                        real_bg = (torch.ones_like(real_pred_mk) - real_pred_mk) * self.real_cimgs
+                        save_img_results((fake_img + raw_imgs + mk_img + [fake_fg, fake_bg] + [
+                                          self.real_cimgs, real_pred_mk, real_fg, real_bg]),
+                                          count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)
 
@@ -423,7 +623,8 @@ class FineGAN_trainer(object):
                         end_t - start_t))
 
             if not newly_loaded:
-                save_model(self.netG, avg_param_G, self.netsD, count, self.model_dir, cur_depth)
+                save_model(self.netG, avg_param_G, self.netsD, self.bi_netD, self.mkpred_net,
+                            count, self.model_dir, cur_depth)
             self.update_network()
             avg_param_G = copy_G_params(self.netG)
 

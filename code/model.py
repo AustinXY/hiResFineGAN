@@ -49,47 +49,6 @@ def convlxl(in_planes, out_planes):
                      padding=1, bias=False)
 
 
-def child_to_parent(c_code):
-    ratio = cfg.FINE_GRAINED_CATEGORIES / cfg.SUPER_CATEGORIES
-    cid = torch.argmax(c_code, dim=1)
-    pid = (cid / ratio).long()
-    # print(torch.argmax(c_code,  dim=1))
-    # print(pid)
-    p_code = torch.zeros([c_code.size(0), cfg.SUPER_CATEGORIES]).cuda()
-    for i in range(c_code.size(0)):
-        p_code[i][pid[i]] = 1
-    return p_code
-
-
-def child_to_background(c_code):
-    cid = torch.argmax(c_code,  dim=1)
-    bid = cid % cfg.BG_CATEGORIES
-    # print(bid)
-    # sys.exit(0)
-    b_code = torch.zeros([c_code.size(0), cfg.BG_CATEGORIES]).cuda()
-    for i in range(c_code.size(0)):
-        b_code[i][bid[i]] = 1
-    return b_code
-
-# def child_to_background_rand_b(c_code):
-    # cid = torch.argmax(c_code,  dim=1)
-#
-#     b_code = torch.zeros([c_code.size(0), bg_categories]).cuda()
-#     for i in range(c_code.size(0)):
-#         bid = torch.randint(0, bg_categories-1, ())
-#         b_code[i][bid] = 1
-#     return b_code
-
-# def parent_to_background(p_code):
-#     pid = torch.argmax(p_code,  dim=1)
-#     bg_categories = cfg.SUPER_CATEGORIES // cfg.NUM_P_PER_B * cfg.NUM_B_PER_P
-#     b_code = torch.zeros([p_code.size(0), bg_categories]).cuda()
-#     for i in range(p_code.size(0)):
-#         b_bin = pid[i] // cfg.NUM_P_PER_B
-#         bid = torch.randint(b_bin * cfg.NUM_B_PER_P, (b_bin+1) * cfg.NUM_B_PER_P, (1,))
-#         b_code[i][bid] = 1
-#     return b_code
-
 # ############## G networks ################################################
 # Upsale the spatial size by a factor of 2
 def upBlock(in_planes, out_planes):
@@ -146,10 +105,8 @@ class INIT_STAGE_G(nn.Module):
         self.gf_dim = ngf
         self.c_flag = c_flag
 
-        if self.c_flag == 1:  # parent
-            self.in_dim = cfg.GAN.Z_DIM + cfg.SUPER_CATEGORIES
-        elif self.c_flag == 2:  # child
-            self.in_dim = cfg.GAN.Z_DIM + cfg.FINE_GRAINED_CATEGORIES
+        if self.c_flag == 1:  # fg
+            self.in_dim = cfg.GAN.Z_DIM + cfg.FG_CATEGORIES
         else:  # bg
             self.in_dim = cfg.GAN.Z_DIM + cfg.BG_CATEGORIES
 
@@ -186,10 +143,8 @@ class NEXT_STAGE_G_SAME(nn.Module):
     def __init__(self, ngf, use_hrc=1, num_residual=cfg.GAN.R_NUM):
         super().__init__()
         self.gf_dim = ngf
-        if use_hrc == 1:  # For parent stage
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif use_hrc == 2:  # For child
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        if use_hrc == 1:  # For fg stage
+            self.ef_dim = cfg.FG_CATEGORIES
         else:
             self.ef_dim = cfg.BG_CATEGORIES
 
@@ -224,10 +179,8 @@ class NEXT_STAGE_G_UP(nn.Module):
     def __init__(self, ngf, use_hrc=1, num_residual=cfg.GAN.R_NUM):
         super().__init__()
         self.gf_dim = ngf
-        if use_hrc == 1:  # For parent stage
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif use_hrc == 2:  # For child
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+        if use_hrc == 1:  # For fg stage
+            self.ef_dim = cfg.FG_CATEGORIES
         else:  # bg
             self.ef_dim = cfg.BG_CATEGORIES
 
@@ -338,21 +291,15 @@ class G_NET(nn.Module):
         self.gf_dim = ngf
         self.cur_depth += 1
 
-    def forward(self, z_code, c_code, p_code=None, b_code=None, alpha=None):
+    def forward(self, z_code, p_code, b_code, alpha=None):
+        raw_imgs = []  # raw background and foreground
+        fake_img = []  # Will contain [parent foreground, child foreground]
+        mk_img = []  # Will contain [parent mask, child mask]
 
-        fake_imgs = []  # Will contain [background image, parent image, child image]
-        fg_imgs = []  # Will contain [parent foreground, child foreground]
-        mk_imgs = []  # Will contain [parent mask, child mask]
-        fg_mk = []  # Will contain [masked parent foreground, masked child foreground]
-
-        if cfg.TIED_CODES:
-            # Obtaining the parent code from child code
-            p_code = child_to_parent(c_code)
-            b_code = child_to_background(c_code)
         # bsz = z_code.size(0)
-        # pid = torch.randint(0, cfg.SUPER_CATEGORIES, (bsz,))
+        # pid = torch.randint(0, cfg.FG_CATEGORIES, (bsz,))
         # bid = torch.randint(0, cfg.BG_CATEGORIES, (bsz,))
-        # p_code = torch.zeros([bsz, cfg.SUPER_CATEGORIES]).cuda()
+        # p_code = torch.zeros([bsz, cfg.FG_CATEGORIES]).cuda()
         # b_code = torch.zeros([bsz, cfg.BG_CATEGORIES]).cuda()
         # for i in range(bsz):
         #     p_code[i, pid[i]] = 1
@@ -372,41 +319,40 @@ class G_NET(nn.Module):
 
             fake_img1 = _b_img_net(h_code_b)
             if i == self.cur_depth and i != start_depth and alpha < 1:
-                prev_fake_img1 = fake_imgs[(i-1)*3]
+                prev_fake_img1 = raw_imgs[(i-1)*3]
                 prev_fake_img1 = F.upsample(
                     prev_fake_img1, scale_factor=2)  # mode='nearest'
                 fake_img1 = (1 - alpha) * prev_fake_img1 + alpha * fake_img1
 
             h_code_p = _p_code_net(h_code_p, p_code)
 
-            fake_img2_fg = _p_fg_net(h_code_p)  # Parent foreground
+            fake_img2 = _p_fg_net(h_code_p)  # Parent foreground
             fake_img2_mk = _p_mk_net(h_code_p)  # Parent mask
             if i == self.cur_depth and i != start_depth and alpha < 1:
-                prev_fake_img2_fg = fg_imgs[(i-1)*2]
-                prev_fake_img2_fg = F.upsample(
-                    prev_fake_img2_fg, scale_factor=2)  # mode='nearest'
-                fake_img2_fg = (1 - alpha) * \
-                    prev_fake_img2_fg + alpha * fake_img2_fg
-                prev_fake_img2_mk = mk_imgs[(i-1)*2]
+                prev_fake_img2 = fake_img[(i-1)*2]
+                prev_fake_img2 = F.upsample(
+                    prev_fake_img2, scale_factor=2)  # mode='nearest'
+                fake_img2 = (1 - alpha) * \
+                    prev_fake_img2 + alpha * fake_img2
+                prev_fake_img2_mk = mk_img[(i-1)*2]
                 prev_fake_img2_mk = F.upsample(
                     prev_fake_img2_mk, scale_factor=2)  # mode='nearest'
                 fake_img2_mk = (1 - alpha) * \
                     prev_fake_img2_mk + alpha * fake_img2_mk
 
             if i == self.cur_depth:
-                fake_imgs.append(fake_img1)
                 ones_mask_p = torch.ones_like(fake_img2_mk)
                 opp_mask_p = ones_mask_p - fake_img2_mk
-                fg_masked2 = torch.mul(fake_img2_fg, fake_img2_mk)
-                fg_mk.append(fg_masked2)
+                fg_masked2 = torch.mul(fake_img2, fake_img2_mk)
                 bg_masked2 = torch.mul(fake_img1, opp_mask_p)
-                fg_mk.append(bg_masked2)
                 fake_img2_final = fg_masked2 + bg_masked2  # Parent image
-                fake_imgs.append(fake_img2_final)
-                fg_imgs.append(fake_img2_fg)
-                mk_imgs.append(fake_img2_mk)
 
-        return fake_imgs, fg_imgs, mk_imgs, fg_mk, [p_code, b_code]
+                raw_imgs.append(fake_img1)
+                raw_imgs.append(fake_img2)
+                fake_img.append(fake_img2_final)
+                mk_img.append(fake_img2_mk)
+
+        return fake_img, raw_imgs, mk_img
 
 # ############## D networks ################################################
 def Block3x3_leakRelu(in_planes, out_planes):
@@ -430,50 +376,6 @@ def downBlock(in_channels, out_channels, kernel_size=3, stride=1, padding=1, dil
     return block
 
 
-class MnetConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
-        super().__init__()
-        self.input_conv = nn.Conv2d(
-            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-        self.mask_conv = nn.Conv2d(
-            1, 1, kernel_size, stride, padding, dilation, groups, False)
-
-        # mask is not updated
-        for param in self.mask_conv.parameters():
-            param.requires_grad = False
-
-    def forward(self, input, mask):
-        """
-        input is regular tensor with shape N*C*H*W
-        mask has to have 1 channel N*1*H*W
-        """
-        output = self.input_conv(input)
-        if mask != None:
-            mask = self.mask_conv(mask)
-        return output, mask
-
-
-class downBlock_mnet(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1, bias=False):
-        super().__init__()
-        self.conv = MnetConv(in_channels, out_channels,
-                             kernel_size, stride, padding, dilation, groups, bias)
-        # self.bn = nn.BatchNorm2d(out_channels)
-
-    def forward(self, input, mask=None):
-        """
-        input is regular tensor with shape N*C*H*W
-        mask has to have 1 channel N*1*H*W
-        """
-        output, mask = self.conv(input, mask)
-        # output = self.bn(output)
-        output = F.leaky_relu(output, 0.2, inplace=True)
-        output = F.avg_pool2d(output, 2)
-        if mask != None:
-            mask = F.avg_pool2d(mask, 2)
-        return output, mask
-
-
 def fromRGB_layer(out_planes):
     layer = nn.Sequential(
         nn.Conv2d(3, out_planes, 1, 1, 0, bias=False),
@@ -490,49 +392,13 @@ def fromGRAY_layer(out_planes):
     return layer
 
 
-class RECON_NET(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.df_dim = 64
-        self.define_module()
-
-    def define_module(self):
-        ndf = self.df_dim
-        self.from_gray = fromGRAY_layer(ndf)
-        self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
-        self.sameblock1 = sameBlock(ndf * 2, ndf * 2)
-        self.downblock2 = downBlock(ndf * 2, ndf * 4, 3, 1, 1)
-        self.sameblock2 = sameBlock(ndf * 4, ndf * 4)
-
-        self.upblock1 = upBlock(ndf * 4, ndf * 2)
-        self.sameblock3 = sameBlock(ndf * 2, ndf * 2)
-        self.upblock2 = upBlock(ndf * 2, ndf)
-        self.sameblock4 = sameBlock(ndf, ndf)
-        self.to_gray = TO_GRAY_LAYER(ndf)
-
-    def forward(self, mask_info):
-        recon_mask = self.from_gray(mask_info)
-        recon_mask = self.downblock1(recon_mask)
-        recon_mask = self.sameblock1(recon_mask)
-        recon_mask = self.downblock2(recon_mask)
-        recon_mask = self.sameblock2(recon_mask)
-        recon_mask = self.upblock1(recon_mask)
-        recon_mask = self.sameblock3(recon_mask)
-        recon_mask = self.upblock2(recon_mask)
-        recon_mask = self.sameblock4(recon_mask)
-        recon_mask = self.to_gray(recon_mask)
-        return recon_mask
-
-
 class D_NET_PC_BASE(nn.Module):
     def __init__(self, stg_no, ndf):
         super().__init__()
         self.df_dim = ndf
         self.stg_no = stg_no
         if self.stg_no == 1:
-            self.ef_dim = cfg.SUPER_CATEGORIES
-        elif self.stg_no == 2:
-            self.ef_dim = cfg.FINE_GRAINED_CATEGORIES
+            self.ef_dim = cfg.FG_CATEGORIES
         else:
             self.ef_dim = cfg.BG_CATEGORIES
 
@@ -546,9 +412,9 @@ class D_NET_PC_BASE(nn.Module):
         self.downblock2 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
         self.downblock3 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
         # self.conv = Block3x3_leakRelu(ndf, ndf * 2)
+        self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
         self.logits = nn.Sequential(
             nn.Conv2d(ndf * 2, efg, kernel_size=4, stride=4))
-        self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
         self.uncond_logits = nn.Sequential(
             nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4),
             nn.Sigmoid())
@@ -598,7 +464,7 @@ class D_NET_PC(nn.Module):
         self.df_dim = ndf
         self.cur_depth = self.cur_depth + 1
 
-    def forward(self, x_var, alpha=None, mask=None):
+    def forward(self, x_var, alpha=None):
         x_code = self.from_RGB_net[self.cur_depth](x_var)
         for i in range(self.cur_depth, -1, -1):
             x_code = self.down_net[i](x_code)
@@ -610,3 +476,203 @@ class D_NET_PC(nn.Module):
         code_pred = x_code[0]
         rf_score = x_code[1]
         return [code_pred, rf_score]
+
+
+
+# mask predict
+
+def Up_unet(in_c, out_c):
+    return nn.Sequential(nn.ConvTranspose2d(in_c, out_c*2, 4, 2, 1), nn.BatchNorm2d(out_c*2), GLU())
+
+
+# def BottleNeck(in_c, out_c):
+#     return nn.Sequential(nn.Conv2d(in_c, out_c*2, 4, 4), nn.BatchNorm2d(out_c*2), GLU())
+
+
+def Down_unet(in_c, out_c):
+    return nn.Sequential(nn.Conv2d(in_c, out_c*2, 4, 2, 1), nn.BatchNorm2d(out_c*2), GLU())
+
+
+class MaskPredictor(nn.Module):
+    def __init__(self, in_c, out_c=1):
+        super().__init__()
+
+        self.first = nn.Sequential(sameBlock(in_c, 32), sameBlock(32, 32))
+
+        self.down1 = Down_unet(32, 32)
+        # 32*64*64
+        self.down2 = Down_unet(32, 64)
+        # 64*32*32
+        self.down3 = Down_unet(64, 128)
+        # 128*16*16
+        self.down4 = Down_unet(128, 256)
+        # 256*8*8
+        self.down5 = Down_unet(256, 512)
+        # 512*4*4
+        self.down6 = Down_unet(512, 512)
+        # 512*2*2
+
+        self.up1 = Up_unet(512, 256)
+        # 256*4*4
+        self.up2 = Up_unet(256+512, 512)
+        # 256*8*8
+        self.up3 = Up_unet(512+256, 256)
+        # 256*16*16
+        self.up4 = Up_unet(256+128, 128)
+        # 128*32*32
+        self.up5 = Up_unet(128+64, 64)
+        # 64*64*64
+        self.up6 = Up_unet(64+32, out_c)
+        # out_c*128*128
+
+        self.last = nn.Sequential(
+            ResBlock(out_c),
+            # ResBlock(out_c),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+
+        x = self.first(x)
+
+        x1 = self.down1(x)
+        x2 = self.down2(x1)
+        x3 = self.down3(x2)
+        x4 = self.down4(x3)
+        x5 = self.down5(x4)
+
+        x = self.up1(self.down6(x5))
+
+        x = self.up2(torch.cat([x, x5], dim=1))
+        x = self.up3(torch.cat([x, x4], dim=1))
+        x = self.up4(torch.cat([x, x3], dim=1))
+        x = self.up5(torch.cat([x, x2], dim=1))
+        x = self.up6(torch.cat([x, x1], dim=1))
+
+        return self.last(x)
+
+
+## code img pair discriminator
+class Gaussian(nn.Module):
+    def __init__(self, std):
+        super(Gaussian, self).__init__()
+        self.std = std
+
+    def forward(self, x):
+        n = torch.randn_like(x)*self.std
+        return x+n
+
+class Conv_Block(nn.Module):
+    def __init__(self, in_c, out_c, k, s, p=0, bn=True, activation=None, noise=False, std=None):
+        super(Conv_Block, self).__init__()
+        model = [nn.Conv2d(in_c, out_c, k, s, p)]
+
+        if bn:
+            model.append(nn.BatchNorm2d(out_c))
+
+        if activation == 'relu':
+            model.append(nn.ReLU())
+        if activation == 'elu':
+            model.append(nn.ELU())
+        if activation == 'leaky':
+            model.append(nn.LeakyReLU(0.2))
+        if activation == 'tanh':
+            model.append(nn.Tanh())
+        if activation == 'sigmoid':
+            model.append(nn.Sigmoid())
+        if activation == 'softmax':
+            model.append(nn.Softmax(dim=1))
+
+        if noise:
+            model.append(Gaussian(std))
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class Linear_Block(nn.Module):
+    def __init__(self, in_c, out_c, bn=True, activation=None, noise=False, std=None):
+        super(Linear_Block, self).__init__()
+        model = [nn.Linear(in_c, out_c)]
+
+        if bn:
+            model.append(nn.BatchNorm1d(out_c))
+
+        if activation == 'relu':
+            model.append(nn.ReLU())
+        if activation == 'elu':
+            model.append(nn.ELU())
+        if activation == 'leaky':
+            model.append(nn.LeakyReLU(0.2))
+        if activation == 'tanh':
+            model.append(nn.Tanh())
+        if activation == 'sigmoid':
+            model.append(nn.Sigmoid())
+        if activation == 'softmax':
+            model.append(nn.Softmax(dim=1))
+
+        if noise:
+            model.append(Gaussian(std))
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class Viewer(nn.Module):
+    def __init__(self, shape):
+        super(Viewer, self).__init__()
+        self.shape = shape
+
+    def forward(self, x):
+        return x.view(*self.shape)
+
+class Bi_Dis_base(nn.Module):
+    def __init__(self, code_len, ngf=16):
+        super(Bi_Dis_base, self).__init__()
+
+        self.image_layer = nn.Sequential(  Conv_Block( 3,     ngf, 4,2,1, bn=False, activation='leaky', noise=False, std=0.3),
+                                             Conv_Block( ngf,   ngf*2, 4,2,1, bn=False, activation='leaky', noise=False, std=0.5),
+                                             Conv_Block( ngf*2, ngf*4, 4,2,1, bn=False, activation='leaky', noise=False, std=0.5),
+                                             Conv_Block( ngf*4, ngf*8, 4,2,1, bn=False, activation='leaky', noise=False, std=0.5),
+                                             Conv_Block( ngf*8, ngf*16, 4,2,1, bn=False, activation='leaky', noise=False, std=0.5),
+                                             Conv_Block( ngf*16, 512, 4,1,0, bn=False, activation='leaky', noise=False, std=0.5),
+                                             Viewer( [-1,512] ) )
+
+        self.code_layer = nn.Sequential( Linear_Block( code_len, 512, bn=False, activation='leaky', noise=True, std=0.5  ),
+                                           Linear_Block( 512, 512, bn=False, activation='leaky', noise=True, std=0.3  ),
+                                           Linear_Block( 512, 512, bn=False, activation='leaky', noise=True, std=0.3  ) )
+
+        self.joint = nn.Sequential(  Linear_Block(1024,1024, bn=False, activation='leaky', noise=False, std=0.5),
+                                     Linear_Block(1024, 1,  bn=False,  activation='None' ),
+                                     nn.Sigmoid(),
+                                     Viewer([-1]) )
+
+    def forward(self, img, code ):
+        t1 = self.image_layer(img)
+        t2 = self.code_layer( code )
+        return  self.joint(  torch.cat( [t1,t2],dim=1) )
+
+
+
+class Bi_Dis(nn.Module):
+    def __init__(self):
+        super(Bi_Dis, self).__init__()
+        self.BD_b = Bi_Dis_base(cfg.BG_CATEGORIES)
+        self.BD_p = Bi_Dis_base(cfg.FG_CATEGORIES)
+
+    def forward(self, img, b_code, p_code, mask=None):
+        mask = None
+        if mask is None:
+            which_pair_b = self.BD_b(img, b_code)
+            which_pair_p = self.BD_p(img, p_code)
+        else:
+            bg = (torch.ones_like(mask) - mask) * img
+            fg = mask * img
+            which_pair_b = self.BD_b(bg, b_code)
+            which_pair_p = self.BD_p(fg, p_code)
+
+        return which_pair_b, which_pair_p
