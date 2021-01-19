@@ -665,7 +665,7 @@ class Bi_Dis(nn.Module):
         self.BD_p = Bi_Dis_base(cfg.FG_CATEGORIES)
 
     def forward(self, img, b_code, p_code, mask=None):
-        mask = None
+        # mask = None
         if mask is None:
             which_pair_b = self.BD_b(img, b_code)
             which_pair_p = self.BD_p(img, p_code)
