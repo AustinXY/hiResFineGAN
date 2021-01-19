@@ -24,13 +24,13 @@ TRAIN:
     NET_D: ''  # Specify the discriminator path to resume training
     MAX_EPOCH: 600
     HARDNEG_MAX_ITER: 1500
-    SNAPSHOT_INTERVAL: 1000
-    SAVEMODEL_INTERVAL: 30000
+    SNAPSHOT_INTERVAL: 2000
+    SAVEMODEL_INTERVAL: 20000
     SNAPSHOT_INTERVAL_HARDNEG: 500
     DISCRIMINATOR_LR: 0.0002
     GENERATOR_LR: 0.0002
     MIN_FG_CVG: 0.2
-    MIN_BG_CVG: 0.1
+    MIN_BG_CVG: 0.2
 
     START_DEPTH: 2 # 32 has depth 0; should match loaded model depth
     END_DEPTH: 2  # 256 has depth 3
