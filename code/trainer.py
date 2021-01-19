@@ -26,6 +26,7 @@ from miscc.utils import mkdir_p
 from datasets import Dataset
 import torchvision.transforms as transforms
 from datetime import datetime
+import json
 
 
 from model import G_NET, D_NET_PC, Bi_Dis, MaskPredictor
@@ -138,7 +139,6 @@ def define_optimizers(netG, netsD, bi_netD, mkpred_net):
                               lr=cfg.TRAIN.DISCRIMINATOR_LR,
                               betas=(0.5, 0.999))
 
-
     optimizerG = []
     opt = optim.Adam(netG.parameters(),
                      lr=cfg.TRAIN.GENERATOR_LR,
@@ -159,24 +159,24 @@ def define_optimizers(netG, netsD, bi_netD, mkpred_net):
     return optimizerG, optimizersD, optimizersBiD, optimizersMk
 
 
-def save_model(netG, avg_param_G, netsD, bi_netD, mkpred_net, epoch, model_dir, cur_depth):
+def save_model(netG, avg_param_G, netsD, bi_netD, mkpred_net, mapping, epoch, model_dir, cur_depth):
     load_params(netG, avg_param_G)
-
-    torch.save(
-        netG.state_dict(),
-        '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
+    torch.save(netG.state_dict(),
+               '%s/netG_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
     for i in range(len(netsD)):
         netD = netsD[i]
         torch.save(netD.state_dict(),
-            '%s/netD%d_depth%d.pth' % (model_dir, i, cur_depth))
+                   '%s/netD%d_%d_depth%d.pth' % (model_dir, i, epoch, cur_depth))
 
-    torch.save(
-        bi_netD.state_dict(),
-        '%s/binetD_depth%d.pth' % (model_dir, cur_depth))
+    torch.save(bi_netD.state_dict(),
+               '%s/binetD_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
 
-    torch.save(
-        mkpred_net.state_dict(),
-        '%s/mkprednet_depth%d.pth' % (model_dir, cur_depth))
+    torch.save(mkpred_net.state_dict(),
+               '%s/mkprednet_%d_depth%d.pth' % (model_dir, epoch, cur_depth))
+
+    with open('%s/mapping_%d.txt' % (model_dir, epoch), "w") as f:
+        json.dump(mapping, f)
+
     print('Save G/Ds models.')
 
 
@@ -249,11 +249,11 @@ class FineGAN_trainer(object):
         optD.step()
 
         if flag == 0:
-            summary_D = summary.scalar('D_loss%d' % 1, errD.item())
+            summary_D = summary.scalar('D_loss', errD.item())
             self.summary_writer.add_summary(summary_D, count)
-            summary_D_real = summary.scalar('D_loss_real_%d' % 1, errD_real.item())
+            summary_D_real = summary.scalar('D_loss_real_1', errD_real.item())
             self.summary_writer.add_summary(summary_D_real, count)
-            summary_D_fake = summary.scalar('D_loss_fake_%d' % 1, errD_fake.item())
+            summary_D_fake = summary.scalar('D_loss_fake_1', errD_fake.item())
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
@@ -266,8 +266,15 @@ class FineGAN_trainer(object):
         self.mapped_b_count[popped_b] -= 1
         self.mapped_b_count[bid] += 1
 
-        if self.mapped_b_count[popped_b] < self.underuse_thld:
-            self.underused_b.add(popped_b)
+        if self.mapped_b_count[popped_b] < self.overused_thld:
+            self.not_overused_b.add(popped_b)
+            if self.mapped_b_count[popped_b] < self.underuse_thld:
+                self.underused_b.add(popped_b)
+
+        if (bid in self.not_overused_b) and \
+           (self.mapped_b_count[bid] >= self.overused_thld):
+            self.not_overused_b.remove(bid)
+
         if (bid in self.underused_b) and \
            (self.mapped_b_count[bid] >= self.underuse_thld):
             self.underused_b.remove(bid)
@@ -490,10 +497,14 @@ class FineGAN_trainer(object):
         for i in range(batch_size):
             pid = rand_pids[i]
 
-            if has_underused_b and torch.rand(1) < 0.5:
-                bid = random.sample(self.underused_b, 1)
+            if has_underused_b and torch.rand(1) < 0.6:
+                bid = random.sample(self.underused_b, 1)[0]
             else:
-                bid = random.sample(self.real_pb_pair[pid], 1)
+                bid = random.sample(self.real_pb_pair[pid], 1)[0]
+                # if sampled bid is overly used, try resample from not overly used
+                if (self.mapped_b_count[bid] >= self.overused_thld) and \
+                   (torch.rand(1) < 0.6):
+                    bid = random.sample(self.not_overused_b, 1)[0]
 
             b_code[i, bid] = 1
             p_code[i, pid] = 1
@@ -522,23 +533,31 @@ class FineGAN_trainer(object):
         print ("Starting normal FineGAN training..")
         count = start_count
 
+        # maintain mapping balance
         self.mapped_b_count = {}
         for b in range(cfg.BG_CATEGORIES):
             self.mapped_b_count[b] = 0
 
         self.underused_b = set(range(cfg.BG_CATEGORIES))
-        self.underuse_thld = 7
+        self.underuse_thld = 10
+
+        self.not_overused_b = set(range(cfg.BG_CATEGORIES))
+        self.overused_thld = 100
 
         store_len = 100
         self.real_pb_pair = {}
         for p in range(cfg.FG_CATEGORIES):
-            rand_b = list(np.random.randint(cfg.BG_CATEGORIES, size=store_len))
+            rand_b = np.random.randint(cfg.BG_CATEGORIES, size=store_len).tolist()
             self.real_pb_pair[p] = rand_b
             for b in rand_b:
                 self.mapped_b_count[b] += 1
                 if (b in self.underused_b) and \
                    (self.mapped_b_count[b] >= self.underuse_thld):
                     self.underused_b.remove(b)
+
+                if (b in self.not_overused_b) and \
+                   (self.mapped_b_count[b] >= self.overused_thld):
+                    self.not_overused_b.remove(b)
 
         for cur_depth in range(start_depth, end_depth+1):
             max_epoch = blend_epochs_per_depth[cur_depth] + \
@@ -598,7 +617,7 @@ class FineGAN_trainer(object):
                         backup_para = copy_G_params(self.netG)
                         if count % cfg.TRAIN.SAVEMODEL_INTERVAL == 0:
                             save_model(self.netG, avg_param_G, self.netsD, self.bi_netD, self.mkpred_net,
-                                       count, self.model_dir, cur_depth)
+                                       self.real_pb_pair, count, self.model_dir, cur_depth)
                         # Save images
                         load_params(self.netG, avg_param_G)
 
