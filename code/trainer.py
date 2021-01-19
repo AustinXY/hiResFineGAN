@@ -266,8 +266,15 @@ class FineGAN_trainer(object):
         self.mapped_b_count[popped_b] -= 1
         self.mapped_b_count[bid] += 1
 
-        if self.mapped_b_count[popped_b] < self.underuse_thld:
-            self.underused_b.add(popped_b)
+        if self.mapped_b_count[popped_b] < self.overused_thld:
+            self.not_overused_b.add(popped_b)
+            if self.mapped_b_count[popped_b] < self.underuse_thld:
+                self.underused_b.add(popped_b)
+
+        if (bid in self.not_overused_b) and \
+           (self.mapped_b_count[bid] >= self.overused_thld):
+            self.not_overused_b.remove(bid)
+
         if (bid in self.underused_b) and \
            (self.mapped_b_count[bid] >= self.underuse_thld):
             self.underused_b.remove(bid)
@@ -494,6 +501,10 @@ class FineGAN_trainer(object):
                 bid = random.sample(self.underused_b, 1)
             else:
                 bid = random.sample(self.real_pb_pair[pid], 1)
+                # if sampled bid is overly used, try resample from not overly used
+                if (self.mapped_b_count[bid] >= self.overused_thld) and \
+                   (torch.rand(1) < 0.5):
+                    bid = random.sample(self.not_overused_b, 1)
 
             b_code[i, bid] = 1
             p_code[i, pid] = 1
@@ -522,12 +533,16 @@ class FineGAN_trainer(object):
         print ("Starting normal FineGAN training..")
         count = start_count
 
+        # maintain mapping balance
         self.mapped_b_count = {}
         for b in range(cfg.BG_CATEGORIES):
             self.mapped_b_count[b] = 0
 
         self.underused_b = set(range(cfg.BG_CATEGORIES))
-        self.underuse_thld = 7
+        self.underuse_thld = 10
+
+        self.not_overused_b = set(range(cfg.BG_CATEGORIES))
+        self.overused_thld = 150
 
         store_len = 100
         self.real_pb_pair = {}
@@ -539,6 +554,10 @@ class FineGAN_trainer(object):
                 if (b in self.underused_b) and \
                    (self.mapped_b_count[b] >= self.underuse_thld):
                     self.underused_b.remove(b)
+
+                if (b in self.not_overused_b) and \
+                   (self.mapped_b_count[b] >= self.overused_thld):
+                    self.not_overused_b.remove(b)
 
         for cur_depth in range(start_depth, end_depth+1):
             max_epoch = blend_epochs_per_depth[cur_depth] + \
