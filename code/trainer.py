@@ -249,11 +249,11 @@ class FineGAN_trainer(object):
         optD.step()
 
         if flag == 0:
-            summary_D = summary.scalar('D_loss%d' % 1, errD.item())
+            summary_D = summary.scalar('D_loss', errD.item())
             self.summary_writer.add_summary(summary_D, count)
-            summary_D_real = summary.scalar('D_loss_real_%d' % 1, errD_real.item())
+            summary_D_real = summary.scalar('D_loss_real_1', errD_real.item())
             self.summary_writer.add_summary(summary_D_real, count)
-            summary_D_fake = summary.scalar('D_loss_fake_%d' % 1, errD_fake.item())
+            summary_D_fake = summary.scalar('D_loss_fake_1', errD_fake.item())
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
