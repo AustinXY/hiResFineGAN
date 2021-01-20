@@ -240,7 +240,6 @@ class FineGAN_trainer(object):
         fake_labels = torch.zeros_like(real_logits)
         real_labels = torch.ones_like(fake_logits)
 
-
         errD_real = criterion_one(real_logits, real_labels) # Real/Fake loss for the real image
         errD_fake = criterion_one(fake_logits, fake_labels) # Real/Fake loss for the fake image
         errD = errD_real + errD_fake
@@ -329,16 +328,18 @@ class FineGAN_trainer(object):
         real_labels = torch.ones_like(real_logits_b)
         fake_labels = torch.zeros_like(fake_logits_b)
 
+        b_pairwise_wt = 0.8
+        p_pairwise_wt = 1.2
+
         # Real/Fake loss for the real_img+b pair and real_img+p pair
-        errBiD_real_b = criterion_one(real_logits_b, real_labels)
-        errBiD_real_p = criterion_one(real_logits_p, real_labels)
+        errBiD_real_b = criterion_one(real_logits_b, real_labels) * b_pairwise_wt
+        errBiD_real_p = criterion_one(real_logits_p, real_labels) * p_pairwise_wt
 
         # Real/Fake loss for the fake_img+b pair and fake_img+p pair
-        errBiD_fake_b = criterion_one(fake_logits_b, fake_labels)
-        errBiD_fake_p = criterion_one(fake_logits_p, fake_labels)
+        errBiD_fake_b = criterion_one(fake_logits_b, fake_labels) * b_pairwise_wt
+        errBiD_fake_p = criterion_one(fake_logits_p, fake_labels) * p_pairwise_wt
 
         errBiD = errBiD_real_b + errBiD_real_p + errBiD_fake_b + errBiD_fake_p
-
         errBiD.backward()
         optBiD.step()
 
@@ -407,6 +408,8 @@ class FineGAN_trainer(object):
         errG_total += errG
 
         # Real/Fake loss for the real_img+b pair and real_img+p pair
+        b_pairwise_wt = 0.8
+        p_pairwise_wt = 1.2
         fake_bg = (torch.ones_like(fake_mk) - fake_mk) * fake_imgs
         fake_fg = fake_mk * fake_imgs
 
@@ -414,17 +417,17 @@ class FineGAN_trainer(object):
 
         real_labels = torch.ones_like(fake_logits_b)
 
-        errBiD_fake_b = criterion_one(fake_logits_b, real_labels)
-        errBiD_fake_p = criterion_one(fake_logits_p, real_labels)
-        errG_total += errBiD_fake_b + errBiD_fake_p
+        errBiD_fake_b = criterion_one(fake_logits_b, real_labels) * b_pairwise_wt
+        errBiD_fake_p = criterion_one(fake_logits_p, real_labels) * p_pairwise_wt
+        errG_total += (errBiD_fake_b + errBiD_fake_p)
 
         # info loss for bg and fg
         with torch.no_grad():
             fake_pred_b = self.netsD[0](fake_bg)[0]
             fake_pred_p = self.netsD[1](fake_fg)[0]
 
-        b_info_wt = 1.
-        p_info_wt = 1.
+        b_info_wt = 0.8
+        p_info_wt = 1.2
         errG_info_b = criterion_class(fake_pred_b, torch.nonzero(b_code.long())[:,1]) * b_info_wt
         errG_info_p = criterion_class(fake_pred_p, torch.nonzero(p_code.long())[:,1]) * p_info_wt
         errG_total += errG_info_b + errG_info_p
@@ -441,17 +444,17 @@ class FineGAN_trainer(object):
             summary_D = summary.scalar('G_loss', errG.item())
             self.summary_writer.add_summary(summary_D, count)
 
-        # bg_mk = torch.ones_like(fake_mk) - fake_mk
+        bg_mk = torch.ones_like(fake_mk) - fake_mk
         ms = fake_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
-        # min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
+        min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
         binary_loss = self.binarization_loss(fake_mk) * 1e1
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fake_mk, dim=(-1,-2))).mean() * 1e-2
-        # bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 0
+        bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 1e-2
 
-        errG_total += binary_loss + fg_cvg_loss #+ bg_cvg_loss
+        errG_total += binary_loss + fg_cvg_loss + bg_cvg_loss
 
-        self.cl = fg_cvg_loss #+ bg_cvg_loss
+        self.cl = fg_cvg_loss + bg_cvg_loss
         self.bl = binary_loss
         # self.ol = oob_loss
 
@@ -539,10 +542,10 @@ class FineGAN_trainer(object):
             self.mapped_b_count[b] = 0
 
         self.underused_b = set(range(cfg.BG_CATEGORIES))
-        self.underuse_thld = 10
+        self.underuse_thld = 5
 
         self.not_overused_b = set(range(cfg.BG_CATEGORIES))
-        self.overused_thld = 100
+        self.overused_thld = 200
 
         store_len = 100
         self.real_pb_pair = {}
@@ -629,8 +632,8 @@ class FineGAN_trainer(object):
                         fake_bg = (torch.ones_like(mk_img[0]) - mk_img[0]) * fake_img[0]
                         real_fg = real_pred_mk * self.real_cimgs
                         real_bg = (torch.ones_like(real_pred_mk) - real_pred_mk) * self.real_cimgs
-                        save_img_results((fake_img + raw_imgs + mk_img + [fake_fg, fake_bg] + [
-                                          self.real_cimgs, real_pred_mk, real_fg, real_bg]),
+                        save_img_results((fake_img + raw_imgs + mk_img + [fake_bg, fake_fg] + [
+                                          self.real_cimgs, real_pred_mk, real_bg, real_fg]),
                                           count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)

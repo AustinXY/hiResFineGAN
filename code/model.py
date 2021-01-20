@@ -437,7 +437,6 @@ class D_NET_PC(nn.Module):
         super().__init__()
         self.df_dim = 256
         self.stg_no = stg_no
-
         self.define_module()
 
     def define_module(self):
@@ -480,7 +479,6 @@ class D_NET_PC(nn.Module):
 
 
 # mask predict
-
 def Up_unet(in_c, out_c):
     return nn.Sequential(nn.ConvTranspose2d(in_c, out_c*2, 4, 2, 1), nn.BatchNorm2d(out_c*2), GLU())
 
