@@ -27,6 +27,7 @@ from datasets import Dataset
 import torchvision.transforms as transforms
 from datetime import datetime
 import json
+from torch import autograd
 
 
 from model import G_NET, D_NET_PC, Bi_Dis, MaskPredictor
@@ -229,7 +230,6 @@ class FineGAN_trainer(object):
         netD.zero_grad()
 
         flag = count % 100
-        criterion_one = self.criterion_one
 
         real_imgs = self.real_cimgs
         fake_imgs = self.fake_img[0].detach()
@@ -237,17 +237,18 @@ class FineGAN_trainer(object):
         real_logits = netD(real_imgs)[1]
         fake_logits = netD(fake_imgs)[1]
 
-        fake_labels = torch.zeros_like(real_logits)
-        real_labels = torch.ones_like(fake_logits)
+        errD_real = real_logits.mean()
+        errD_real.backward(self.mone)
 
+        errD_fake = fake_logits.mean()
+        errD_fake.backward(self.one)
 
-        errD_real = criterion_one(real_logits, real_labels) # Real/Fake loss for the real image
-        errD_fake = criterion_one(fake_logits, fake_labels) # Real/Fake loss for the fake image
-        errD = errD_real + errD_fake
+        gradient_penalty = self.calculate_gradient_penalty(real_imgs, fake_imgs)
+        gradient_penalty.backward()
 
-        errD.backward()
         optD.step()
 
+        errD = errD_real + errD_fake
         if flag == 0:
             summary_D = summary.scalar('D_loss', errD.item())
             self.summary_writer.add_summary(summary_D, count)
@@ -257,6 +258,28 @@ class FineGAN_trainer(object):
             self.summary_writer.add_summary(summary_D_fake, count)
 
         return errD
+
+
+    def calculate_gradient_penalty(self, real_imgs, fake_imgs):
+        netD = self.netsD[1]
+        eta = torch.FloatTensor(real_imgs.size(0), 1, 1, 1).uniform_(0,1)
+        eta = eta.expand(real_imgs.size()).cuda()
+
+        interpolated = eta * real_imgs + ((1 - eta) * fake_imgs)
+
+        # define it to calculate gradient
+        interpolated = Variable(interpolated, requires_grad=True)
+
+        # calculate probability of interpolated examples
+        prob_interpolated = netD(interpolated)[1]
+
+        # calculate gradients of probabilities with respect to examples
+        gradients = autograd.grad(outputs=prob_interpolated, inputs=interpolated,
+                                  grad_outputs=torch.ones(prob_interpolated.size()).cuda(),
+                                  create_graph=True, retain_graph=True)[0]
+
+        grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * self.lambda_term
+        return grad_penalty
 
 
     # keep length of pb pair stored not changing
@@ -336,7 +359,6 @@ class FineGAN_trainer(object):
         # Real/Fake loss for the fake_img+b pair and fake_img+p pair
         errBiD_fake_b = criterion_one(fake_logits_b, fake_labels)
         errBiD_fake_p = criterion_one(fake_logits_p, fake_labels)
-
         errBiD = errBiD_real_b + errBiD_real_p + errBiD_fake_b + errBiD_fake_p
 
         errBiD.backward()
@@ -402,16 +424,14 @@ class FineGAN_trainer(object):
 
         # final image real/fake loss
         fake_logits = self.netsD[1](fake_imgs)[1]
-        real_labels = torch.ones_like(fake_logits)
-        errG = criterion_one(fake_logits, real_labels)
-        errG_total += errG
+        errG = fake_logits.mean()
+        errG_total -= errG
 
         # Real/Fake loss for the real_img+b pair and real_img+p pair
         fake_bg = (torch.ones_like(fake_mk) - fake_mk) * fake_imgs
         fake_fg = fake_mk * fake_imgs
 
         fake_logits_b, fake_logits_p = self.bi_netD(fake_imgs, b_code, p_code, fake_mk)
-
         real_labels = torch.ones_like(fake_logits_b)
 
         errBiD_fake_b = criterion_one(fake_logits_b, real_labels)
@@ -523,12 +543,21 @@ class FineGAN_trainer(object):
         self.criterion_one = nn.BCELoss()
         self.criterion_class = nn.CrossEntropyLoss()
 
+        self.one = torch.tensor(1, dtype=torch.float)
+        self.mone = self.one * -1
+
+        self.one = self.one.cuda()
+        self.mone = self.mone.cuda()
+        self.lambda_term = 10
+
         nz = cfg.GAN.Z_DIM
 
         if cfg.CUDA:
             self.criterion.cuda()
             self.criterion_one.cuda()
             self.criterion_class.cuda()
+            self.one.cuda()
+            self.mone.cuda()
 
         print ("Starting normal FineGAN training..")
         count = start_count
@@ -629,8 +658,8 @@ class FineGAN_trainer(object):
                         fake_bg = (torch.ones_like(mk_img[0]) - mk_img[0]) * fake_img[0]
                         real_fg = real_pred_mk * self.real_cimgs
                         real_bg = (torch.ones_like(real_pred_mk) - real_pred_mk) * self.real_cimgs
-                        save_img_results((fake_img + raw_imgs + mk_img + [fake_fg, fake_bg] + [
-                                          self.real_cimgs, real_pred_mk, real_fg, real_bg]),
+                        save_img_results((fake_img + raw_imgs + mk_img + [fake_bg, fake_fg] + [
+                                          self.real_cimgs, real_pred_mk, real_bg, real_fg]),
                                           count, self.image_dir, self.summary_writer, cur_depth)
                         #
                         load_params(self.netG, backup_para)

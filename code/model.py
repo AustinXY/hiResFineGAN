@@ -365,11 +365,11 @@ def Block3x3_leakRelu(in_planes, out_planes):
 
 
 # Downsale the spatial size by a factor of 2
-def downBlock(in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
+def downBlock(in_channels, out_channels, hw, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=False):
     block = nn.Sequential(
         nn.Conv2d(in_channels, out_channels, kernel_size,
                   stride, padding, dilation, groups, bias),
-        nn.BatchNorm2d(out_channels),
+        nn.LayerNorm([out_channels, hw, hw]),
         nn.LeakyReLU(0.2, inplace=True),
         nn.AvgPool2d(2)
     )
@@ -408,16 +408,15 @@ class D_NET_PC_BASE(nn.Module):
         ndf = self.df_dim
         efg = self.ef_dim
 
-        self.downblock1 = downBlock(ndf, ndf * 2, 3, 1, 1)
-        self.downblock2 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
-        self.downblock3 = downBlock(ndf * 2, ndf * 2, 3, 1, 1)
+        self.downblock1 = downBlock(ndf, ndf * 2, 32, 3, 1, 1)
+        self.downblock2 = downBlock(ndf * 2, ndf * 2, 16, 3, 1, 1)
+        self.downblock3 = downBlock(ndf * 2, ndf * 2, 8, 3, 1, 1)
         # self.conv = Block3x3_leakRelu(ndf, ndf * 2)
         self.jointConv = Block3x3_leakRelu(ndf * 2, ndf * 2)
         self.logits = nn.Sequential(
             nn.Conv2d(ndf * 2, efg, kernel_size=4, stride=4))
         self.uncond_logits = nn.Sequential(
-            nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4),
-            nn.Sigmoid())
+            nn.Conv2d(ndf * 2, 1, kernel_size=4, stride=4))
 
     def forward(self, x_code):
         x_code = self.downblock1(x_code)  # 512 * 16 * 16
@@ -445,12 +444,14 @@ class D_NET_PC(nn.Module):
 
         self.from_RGB_net = nn.ModuleList([fromRGB_layer(ndf)])
         self.down_net = nn.ModuleList([D_NET_PC_BASE(self.stg_no, ndf)])
+        hw = 32 * 2
         ndf = ndf // 2
 
         for _ in range(start_depth):
             self.from_RGB_net.append(fromRGB_layer(ndf))
-            self.down_net.append(downBlock(ndf, ndf * 2, 3, 1, 1))
+            self.down_net.append(downBlock(ndf, ndf * 2, hw, 3, 1, 1))
             ndf = ndf // 2
+            hw *= 2
 
         self.df_dim = ndf
         self.cur_depth = start_depth
@@ -648,7 +649,7 @@ class Bi_Dis_base(nn.Module):
 
         self.joint = nn.Sequential(  Linear_Block(1024,1024, bn=False, activation='leaky', noise=False, std=0.5),
                                      Linear_Block(1024, 1,  bn=False,  activation='None' ),
-                                     nn.Sigmoid(),
+                                    #  nn.Sigmoid(),
                                      Viewer([-1]) )
 
     def forward(self, img, code ):
