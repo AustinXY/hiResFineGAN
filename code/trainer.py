@@ -425,6 +425,15 @@ class FineGAN_trainer(object):
         errG_info_p = criterion_class(fake_pred_p, torch.nonzero(p_code.long())[:,1]) * self.p_info_wt
         errG_total += errG_info_b + errG_info_p
 
+        # fg bg seperation loss
+        with torch.no_grad():
+            bg_rf = self.netsD[1](fake_bg)[1]
+            fg_rf = self.netsD[1](fake_fg)[1]
+
+        fbsep_loss = -(fg_rf.mean() - bg_rf.mean()) * 5e-1
+
+        errG_total += fbsep_loss
+
         if flag == 0:
             summary_BiD_fake = summary.scalar('G_BiD_loss_fake_0', errBiD_fake_b.item())
             self.summary_writer.add_summary(summary_BiD_fake, count)
@@ -449,7 +458,7 @@ class FineGAN_trainer(object):
 
         self.cl = fg_cvg_loss + bg_cvg_loss
         self.bl = binary_loss
-        # self.ol = oob_loss
+        self.fl = fbsep_loss
 
         errG_total.backward()
         for optG in self.optimizerG:
@@ -543,10 +552,10 @@ class FineGAN_trainer(object):
 
         store_len = 100
         self.underused_b = set(range(cfg.BG_CATEGORIES))
-        self.underuse_thld = (cfg.FG_CATEGORIES * store_len / cfg.BG_CATEGORIES) / 6
+        self.underuse_thld = (cfg.FG_CATEGORIES * store_len / cfg.BG_CATEGORIES) / 7
 
         self.not_overused_b = set(range(cfg.BG_CATEGORIES))
-        self.overused_thld = (cfg.FG_CATEGORIES * store_len / cfg.BG_CATEGORIES) * 6
+        self.overused_thld = (cfg.FG_CATEGORIES * store_len / cfg.BG_CATEGORIES) * 5
 
         self.real_pb_pair = {}
         for p in range(cfg.FG_CATEGORIES):
@@ -614,7 +623,8 @@ class FineGAN_trainer(object):
 
                     newly_loaded = False
                     if count % cfg.TRAIN.SNAPSHOT_INTERVAL == 0:
-                        print("binary_loss: {}, cvg_loss: {}".format(self.bl.item(), self.cl.item()))
+                        print("binary_loss: {}, cvg_loss: {}, fbsep_loss: {}".format(
+                            self.bl.item(), self.cl.item(), self.fl.item()))
                         print(self.mapped_b_count)
 
                         backup_para = copy_G_params(self.netG)
