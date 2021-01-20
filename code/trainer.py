@@ -355,31 +355,31 @@ class FineGAN_trainer(object):
         return errBiD
 
 
-    def train_mkpred_net(self, count):
-        optMk = self.optimizersMk
-        self.mkpred_net.zero_grad()
-        criterion = nn.MSELoss()
+    # def train_mkpred_net(self, count):
+    #     optMk = self.optimizersMk
+    #     self.mkpred_net.zero_grad()
+    #     criterion = nn.MSELoss()
 
-        flag = count % 100
+    #     flag = count % 100
 
-        fake_imgs = self.fake_img[0].detach()
+    #     fake_imgs = self.fake_img[0].detach()
 
-        pred_mk = self.mkpred_net(fake_imgs)
-        real_mk = self.mk_img[0].detach()
+    #     pred_mk = self.mkpred_net(fake_imgs)
+    #     real_mk = self.mk_img[0].detach()
 
-        mk_recon_loss = criterion(pred_mk, real_mk)
-        binary_loss = self.binarization_loss(pred_mk) * 1
+    #     mk_recon_loss = criterion(pred_mk, real_mk)
+    #     binary_loss = self.binarization_loss(pred_mk) * 1
 
-        errMk = mk_recon_loss + binary_loss
+    #     errMk = mk_recon_loss + binary_loss
 
-        errMk.backward()
-        optMk.step()
+    #     errMk.backward()
+    #     optMk.step()
 
-        if flag == 0:
-            summary_mkrecon = summary.scalar('mk_recon_loss', mk_recon_loss.item())
-            self.summary_writer.add_summary(summary_mkrecon, count)
+    #     if flag == 0:
+    #         summary_mkrecon = summary.scalar('mk_recon_loss', mk_recon_loss.item())
+    #         self.summary_writer.add_summary(summary_mkrecon, count)
 
-        return mk_recon_loss
+    #     return mk_recon_loss
 
 
     def train_Gnet(self, count):
@@ -393,10 +393,17 @@ class FineGAN_trainer(object):
         flag = count % 100
 
         criterion_one, criterion_class = self.criterion_one, self.criterion_class
+        criterion = nn.MSELoss()
         p_code, b_code = self.p_code, self.b_code
 
         fake_imgs = self.fake_img[0]
         fake_mk = self.mk_img[0]
+        real_imgs = self.real_cimgs
+
+        real_pred_mk = self.mkpred_net(real_imgs)
+
+        real_bg = (torch.ones_like(real_pred_mk) - real_pred_mk) * real_imgs
+        real_fg = real_pred_mk * real_imgs
 
         # final image real/fake loss
         fake_logits = self.netsD[1](fake_imgs)[1]
@@ -417,40 +424,36 @@ class FineGAN_trainer(object):
         errG_total += (errBiD_fake_b + errBiD_fake_p)
 
         # info loss for bg and fg
-        with torch.no_grad():
-            fake_pred_b = self.netsD[0](fake_bg)[0]
-            fake_pred_p = self.netsD[1](fake_fg)[0]
+        fake_pred_b = self.netsD[0](fake_bg)[0]
+        fake_pred_p = self.netsD[1](fake_fg)[0]
 
         errG_info_b = criterion_class(fake_pred_b, torch.nonzero(b_code.long())[:,1]) * self.b_info_wt
         errG_info_p = criterion_class(fake_pred_p, torch.nonzero(p_code.long())[:,1]) * self.p_info_wt
         errG_total += errG_info_b + errG_info_p
 
         # fg bg seperation loss
-        with torch.no_grad():
-            bg_rf = self.netsD[1](fake_bg)[1]
-            fg_rf = self.netsD[1](fake_fg)[1]
+        bg_rf = self.netsD[1](real_bg)[1]
+        fg_rf = self.netsD[1](real_fg)[1]
 
         fbsep_loss = -(fg_rf.mean() - bg_rf.mean()) * 5e-1
-
         errG_total += fbsep_loss
 
-        if flag == 0:
-            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_0', errBiD_fake_b.item())
-            self.summary_writer.add_summary(summary_BiD_fake, count)
-            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_1', errBiD_fake_p.item())
-            self.summary_writer.add_summary(summary_BiD_fake, count)
-            summary_D_class = summary.scalar('Information_loss_0', errG_info_b.item())
-            self.summary_writer.add_summary(summary_D_class, count)
-            summary_D_class = summary.scalar('Information_loss_1', errG_info_p.item())
-            self.summary_writer.add_summary(summary_D_class, count)
-            summary_D = summary.scalar('G_loss', errG.item())
-            self.summary_writer.add_summary(summary_D, count)
+        # train mkpred net
+        pred_mk = self.mkpred_net(fake_imgs)
+        real_mk = self.mk_img[0].detach()
 
+        mk_recon_loss = criterion(pred_mk, real_mk)
+        recon_binary_loss = self.binarization_loss(pred_mk) * 1
+
+        errMk = mk_recon_loss + recon_binary_loss
+        errG_total += errMk
+
+        # other losses
         bg_mk = torch.ones_like(fake_mk) - fake_mk
         ms = fake_mk.size()
         min_fg_cvg = cfg.TRAIN.MIN_FG_CVG * ms[2] * ms[3]
         min_bg_cvg = cfg.TRAIN.MIN_BG_CVG * ms[2] * ms[3]
-        binary_loss = self.binarization_loss(fake_mk) * 1e1
+        binary_loss = self.binarization_loss(fake_mk) * 2e1
         fg_cvg_loss = F.relu(min_fg_cvg - torch.sum(fake_mk, dim=(-1,-2))).mean() * 1e-2
         bg_cvg_loss = F.relu(min_bg_cvg - torch.sum(bg_mk, dim=(-1,-2))).mean() * 1e-2
 
@@ -463,6 +466,21 @@ class FineGAN_trainer(object):
         errG_total.backward()
         for optG in self.optimizerG:
             optG.step()
+
+        if flag == 0:
+            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_0', errBiD_fake_b.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+            summary_BiD_fake = summary.scalar('G_BiD_loss_fake_1', errBiD_fake_p.item())
+            self.summary_writer.add_summary(summary_BiD_fake, count)
+            summary_D_class = summary.scalar('Information_loss_0', errG_info_b.item())
+            self.summary_writer.add_summary(summary_D_class, count)
+            summary_D_class = summary.scalar('Information_loss_1', errG_info_p.item())
+            self.summary_writer.add_summary(summary_D_class, count)
+            summary_D = summary.scalar('G_loss', errG.item())
+            self.summary_writer.add_summary(summary_D, count)
+            summary_mkrecon = summary.scalar('mk_recon_loss', mk_recon_loss.item())
+            self.summary_writer.add_summary(summary_mkrecon, count)
+
         return errG_total
 
 
@@ -611,7 +629,7 @@ class FineGAN_trainer(object):
                     self.fake_img, self.raw_imgs, self.mk_img = self.netG(noise, self.p_code, self.b_code)
 
                     # Update Discriminator networks
-                    self.train_mkpred_net(count)
+                    # self.train_mkpred_net(count)
                     errD_total = self.train_Dnet(count)
                     self.train_BiDnet(count)
 
